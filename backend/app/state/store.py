@@ -21,6 +21,7 @@ class StateChange:
     aircraft_id: str
     state: AircraftState | None = None
     reason: str | None = None
+    changed_fields: tuple[str, ...] = ()
 
 
 class AircraftStateStore:
@@ -55,6 +56,7 @@ class AircraftStateStore:
             )
 
         if existing is None:
+            before_fields: dict[str, object | None] | None = None
             state = AircraftState(
                 aircraft_id=telemetry.aircraft_id,
                 last_seen=telemetry.captured_at,
@@ -62,16 +64,19 @@ class AircraftStateStore:
             )
             change_type = StateChangeType.CREATED
         else:
+            before_fields = self._capture_state_fields(existing)
             state = existing
             change_type = StateChangeType.UPDATED
 
         self._merge_into_state(state, telemetry)
         self._states[telemetry.aircraft_id] = state
+        changed_fields = self._diff_state_fields(before_fields, self._capture_state_fields(state))
 
         return StateChange(
             change_type=change_type,
             aircraft_id=telemetry.aircraft_id,
             state=state,
+            changed_fields=changed_fields,
         )
 
     def apply_many(self, telemetry_batch: Iterable[AircraftTelemetry]) -> list[StateChange]:
@@ -93,6 +98,7 @@ class AircraftStateStore:
                         aircraft_id=aircraft_id,
                         state=state,
                         reason="stale_timeout",
+                        changed_fields=("status",),
                     )
                 )
                 del self._states[aircraft_id]
@@ -149,3 +155,28 @@ class AircraftStateStore:
         state.trail.append(next_point)
         if len(state.trail) > self.trail_max_points:
             del state.trail[: len(state.trail) - self.trail_max_points]
+
+    @staticmethod
+    def _capture_state_fields(state: AircraftState) -> dict[str, object | None]:
+        return {
+            "callsign": state.callsign,
+            "squawk": state.squawk,
+            "category": state.category,
+            "latitude": state.latitude,
+            "longitude": state.longitude,
+            "altitude_ft": state.altitude_ft,
+            "ground_speed_kt": state.ground_speed_kt,
+            "heading_deg": state.heading_deg,
+            "vertical_rate_fpm": state.vertical_rate_fpm,
+            "status": state.status,
+        }
+
+    @staticmethod
+    def _diff_state_fields(
+        before: dict[str, object | None] | None,
+        after: dict[str, object | None],
+    ) -> tuple[str, ...]:
+        if before is None:
+            return tuple(name for name, value in after.items() if value is not None)
+
+        return tuple(name for name, value in after.items() if before.get(name) != value)

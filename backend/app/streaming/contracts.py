@@ -9,6 +9,16 @@ from app.models.aircraft import AircraftState, AircraftUpdateDTO
 from app.state.store import StateChange, StateChangeType
 
 STREAM_CONTRACT_VERSION = 1
+DELTA_PUBLISH_FIELDS = frozenset(
+    {
+        "callsign",
+        "latitude",
+        "longitude",
+        "altitude_ft",
+        "ground_speed_kt",
+        "heading_deg",
+    }
+)
 
 
 def _serialize_timestamp(value: datetime) -> str:
@@ -94,6 +104,15 @@ class DeltaStreamEvent:
         }
 
 
+@dataclass(slots=True, frozen=True)
+class DeltaPreparationResult:
+    delta_changes: list[DeltaAircraftEvent]
+    seen_change_count: int
+    publishable_change_count: int
+    suppressed_change_count: int
+    ignored_change_count: int
+
+
 def state_to_update_dto(state: AircraftState) -> AircraftUpdateDTO:
     return AircraftUpdateDTO(
         aircraft_id=state.aircraft_id,
@@ -132,23 +151,32 @@ def build_delta_event(
 ) -> DeltaStreamEvent:
     if sent_at is None:
         sent_at = datetime.now(timezone.utc)
+    preparation = prepare_delta_changes(changes)
 
+    return DeltaStreamEvent(
+        sequence=sequence,
+        sent_at=sent_at,
+        changes=preparation.delta_changes,
+    )
+
+
+def prepare_delta_changes(changes: Iterable[StateChange]) -> DeltaPreparationResult:
     delta_changes: list[DeltaAircraftEvent] = []
+    seen_change_count = 0
+    publishable_change_count = 0
+    suppressed_change_count = 0
+    ignored_change_count = 0
 
     for change in changes:
-        if change.change_type in (StateChangeType.CREATED, StateChangeType.UPDATED):
-            if change.state is None:
-                raise ValueError("upsert changes must include state")
-            delta_changes.append(
-                DeltaAircraftEvent(
-                    action=DeltaAction.UPSERT,
-                    aircraft_id=change.aircraft_id,
-                    aircraft=state_to_update_dto(change.state),
-                )
-            )
+        seen_change_count += 1
+
+        if change.change_type == StateChangeType.IGNORED:
+            ignored_change_count += 1
+            suppressed_change_count += 1
             continue
 
         if change.change_type == StateChangeType.REMOVED:
+            publishable_change_count += 1
             delta_changes.append(
                 DeltaAircraftEvent(
                     action=DeltaAction.REMOVE,
@@ -158,13 +186,41 @@ def build_delta_event(
             )
             continue
 
-        if change.change_type == StateChangeType.IGNORED:
+        if change.change_type == StateChangeType.CREATED:
+            if change.state is None:
+                raise ValueError("created changes must include state")
+            publishable_change_count += 1
+            delta_changes.append(
+                DeltaAircraftEvent(
+                    action=DeltaAction.UPSERT,
+                    aircraft_id=change.aircraft_id,
+                    aircraft=state_to_update_dto(change.state),
+                )
+            )
+            continue
+
+        if change.change_type == StateChangeType.UPDATED:
+            if change.state is None:
+                raise ValueError("updated changes must include state")
+            if not set(change.changed_fields).intersection(DELTA_PUBLISH_FIELDS):
+                suppressed_change_count += 1
+                continue
+            publishable_change_count += 1
+            delta_changes.append(
+                DeltaAircraftEvent(
+                    action=DeltaAction.UPSERT,
+                    aircraft_id=change.aircraft_id,
+                    aircraft=state_to_update_dto(change.state),
+                )
+            )
             continue
 
         raise ValueError(f"unsupported state change type: {change.change_type}")
 
-    return DeltaStreamEvent(
-        sequence=sequence,
-        sent_at=sent_at,
-        changes=delta_changes,
+    return DeltaPreparationResult(
+        delta_changes=delta_changes,
+        seen_change_count=seen_change_count,
+        publishable_change_count=publishable_change_count,
+        suppressed_change_count=suppressed_change_count,
+        ignored_change_count=ignored_change_count,
     )

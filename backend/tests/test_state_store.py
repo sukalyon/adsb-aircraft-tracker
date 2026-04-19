@@ -61,10 +61,44 @@ class AircraftStateStoreTests(unittest.TestCase):
 
         self.assertIsNotNone(state)
         self.assertEqual(change.change_type, StateChangeType.UPDATED)
+        self.assertEqual(change.changed_fields, ("ground_speed_kt", "heading_deg"))
         self.assertEqual(state.latitude, 41.0)
         self.assertEqual(state.longitude, 29.0)
         self.assertEqual(state.ground_speed_kt, 440.0)
         self.assertEqual(len(state.trail), 1)
+
+    def test_same_live_values_produce_empty_changed_fields(self) -> None:
+        store = AircraftStateStore(trail_max_points=4)
+
+        store.apply(
+            AircraftTelemetry(
+                aircraft_id="4ca123",
+                captured_at=parse_timestamp("2026-04-13T09:00:00Z"),
+                source="readsb",
+                callsign="THY7AB",
+                latitude=41.0,
+                longitude=29.0,
+                altitude_ft=30000,
+                ground_speed_kt=430.0,
+                heading_deg=90.0,
+            )
+        )
+        change = store.apply(
+            AircraftTelemetry(
+                aircraft_id="4ca123",
+                captured_at=parse_timestamp("2026-04-13T09:00:05Z"),
+                source="readsb",
+                callsign="THY7AB",
+                latitude=41.0,
+                longitude=29.0,
+                altitude_ft=30000,
+                ground_speed_kt=430.0,
+                heading_deg=90.0,
+            )
+        )
+
+        self.assertEqual(change.change_type, StateChangeType.UPDATED)
+        self.assertEqual(change.changed_fields, ())
 
     def test_trail_is_bounded_and_out_of_order_updates_are_ignored(self) -> None:
         store = AircraftStateStore(trail_max_points=2)
@@ -110,6 +144,7 @@ class AircraftStateStoreTests(unittest.TestCase):
 
         self.assertIsNotNone(state)
         self.assertEqual(ignored.change_type, StateChangeType.IGNORED)
+        self.assertEqual(ignored.changed_fields, ())
         self.assertEqual(len(state.trail), 2)
         self.assertEqual(state.trail[0].latitude, 41.1)
         self.assertEqual(state.trail[1].latitude, 41.2)
@@ -133,6 +168,7 @@ class AircraftStateStoreTests(unittest.TestCase):
 
         self.assertEqual(len(removed), 1)
         self.assertEqual(removed[0].change_type, StateChangeType.REMOVED)
+        self.assertEqual(removed[0].changed_fields, ("status",))
         self.assertEqual(store.active_count, 0)
 
 

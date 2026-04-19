@@ -8,7 +8,7 @@ from uuid import uuid4
 from app.models.aircraft import AircraftState
 from app.state.store import StateChange
 
-from .contracts import build_delta_event, build_snapshot_event
+from .contracts import DeltaStreamEvent, build_snapshot_event, prepare_delta_changes
 
 
 class JsonWebSocketConnection(Protocol):
@@ -37,9 +37,52 @@ class WebSocketClientSession:
         return sequence
 
 
+@dataclass(slots=True, frozen=True)
+class PublishDeltaResult:
+    attempted_client_count: int
+    delivered_client_count: int
+    dropped_client_count: int
+    emitted_change_count: int
+    seen_change_count: int
+    publishable_change_count: int
+    suppressed_change_count: int
+    ignored_change_count: int
+
+
+@dataclass(slots=True, frozen=True)
+class WebSocketHubMetricsSnapshot:
+    connected_client_count: int
+    total_connections_accepted: int
+    total_disconnects: int
+    total_snapshot_messages_sent: int
+    total_delta_publish_calls: int
+    total_delta_messages_sent: int
+    total_delta_change_entries_sent: int
+    total_client_send_failures: int
+    total_seen_state_changes: int
+    total_publishable_state_changes: int
+    total_suppressed_state_changes: int
+    total_ignored_state_changes: int
+    last_snapshot_sent_at: datetime | None
+    last_delta_sent_at: datetime | None
+
+
 class RealtimeWebSocketHub:
     def __init__(self) -> None:
         self._sessions: dict[str, WebSocketClientSession] = {}
+        self._total_connections_accepted = 0
+        self._total_disconnects = 0
+        self._total_snapshot_messages_sent = 0
+        self._total_delta_publish_calls = 0
+        self._total_delta_messages_sent = 0
+        self._total_delta_change_entries_sent = 0
+        self._total_client_send_failures = 0
+        self._total_seen_state_changes = 0
+        self._total_publishable_state_changes = 0
+        self._total_suppressed_state_changes = 0
+        self._total_ignored_state_changes = 0
+        self._last_snapshot_sent_at: datetime | None = None
+        self._last_delta_sent_at: datetime | None = None
 
     @property
     def connected_count(self) -> int:
@@ -47,6 +90,24 @@ class RealtimeWebSocketHub:
 
     def session_ids(self) -> list[str]:
         return sorted(self._sessions)
+
+    def metrics_snapshot(self) -> WebSocketHubMetricsSnapshot:
+        return WebSocketHubMetricsSnapshot(
+            connected_client_count=self.connected_count,
+            total_connections_accepted=self._total_connections_accepted,
+            total_disconnects=self._total_disconnects,
+            total_snapshot_messages_sent=self._total_snapshot_messages_sent,
+            total_delta_publish_calls=self._total_delta_publish_calls,
+            total_delta_messages_sent=self._total_delta_messages_sent,
+            total_delta_change_entries_sent=self._total_delta_change_entries_sent,
+            total_client_send_failures=self._total_client_send_failures,
+            total_seen_state_changes=self._total_seen_state_changes,
+            total_publishable_state_changes=self._total_publishable_state_changes,
+            total_suppressed_state_changes=self._total_suppressed_state_changes,
+            total_ignored_state_changes=self._total_ignored_state_changes,
+            last_snapshot_sent_at=self._last_snapshot_sent_at,
+            last_delta_sent_at=self._last_delta_sent_at,
+        )
 
     async def connect(
         self,
@@ -57,6 +118,7 @@ class RealtimeWebSocketHub:
         await socket.accept()
         session = WebSocketClientSession(client_id=uuid4().hex, socket=socket)
         self._sessions[session.client_id] = session
+        self._total_connections_accepted += 1
 
         snapshot_event = build_snapshot_event(
             snapshot_states,
@@ -65,8 +127,12 @@ class RealtimeWebSocketHub:
         try:
             await socket.send_json(snapshot_event.to_dict())
         except Exception:
+            self._total_client_send_failures += 1
             await self._drop_session(session.client_id, close_code=1011)
             raise
+
+        self._total_snapshot_messages_sent += 1
+        self._last_snapshot_sent_at = snapshot_event.sent_at
 
         return session.client_id
 
@@ -77,24 +143,41 @@ class RealtimeWebSocketHub:
         await self._drop_session(client_id, close_code=close_code)
         return True
 
-    async def publish_delta(self, changes: Iterable[StateChange]) -> int:
+    async def publish_delta(self, changes: Iterable[StateChange]) -> PublishDeltaResult:
         change_list = list(changes)
+        prepared = prepare_delta_changes(change_list)
+        self._total_delta_publish_calls += 1
+        self._total_seen_state_changes += prepared.seen_change_count
+        self._total_publishable_state_changes += prepared.publishable_change_count
+        self._total_suppressed_state_changes += prepared.suppressed_change_count
+        self._total_ignored_state_changes += prepared.ignored_change_count
+
+        if not prepared.delta_changes:
+            return PublishDeltaResult(
+                attempted_client_count=self.connected_count,
+                delivered_client_count=0,
+                dropped_client_count=0,
+                emitted_change_count=0,
+                seen_change_count=prepared.seen_change_count,
+                publishable_change_count=prepared.publishable_change_count,
+                suppressed_change_count=prepared.suppressed_change_count,
+                ignored_change_count=prepared.ignored_change_count,
+            )
+
         delivered = 0
         disconnected_clients: list[str] = []
+        sent_at = datetime.now(timezone.utc)
 
         for session in list(self._sessions.values()):
-            delta_event = build_delta_event(
-                change_list,
+            delta_event = DeltaStreamEvent(
                 sequence=session.reserve_sequence(),
+                sent_at=sent_at,
+                changes=prepared.delta_changes,
             )
-            if not delta_event.changes:
-                session.next_sequence -= 1
-                session.sent_event_count -= 1
-                continue
-
             try:
                 await session.socket.send_json(delta_event.to_dict())
             except Exception:
+                self._total_client_send_failures += 1
                 disconnected_clients.append(session.client_id)
                 continue
 
@@ -103,12 +186,28 @@ class RealtimeWebSocketHub:
         for client_id in disconnected_clients:
             await self._drop_session(client_id, close_code=1011)
 
-        return delivered
+        if delivered > 0:
+            self._total_delta_messages_sent += delivered
+            self._total_delta_change_entries_sent += delivered * len(prepared.delta_changes)
+            self._last_delta_sent_at = sent_at
+
+        return PublishDeltaResult(
+            attempted_client_count=self.connected_count + len(disconnected_clients),
+            delivered_client_count=delivered,
+            dropped_client_count=len(disconnected_clients),
+            emitted_change_count=len(prepared.delta_changes),
+            seen_change_count=prepared.seen_change_count,
+            publishable_change_count=prepared.publishable_change_count,
+            suppressed_change_count=prepared.suppressed_change_count,
+            ignored_change_count=prepared.ignored_change_count,
+        )
 
     async def _drop_session(self, client_id: str, *, close_code: int) -> None:
         session = self._sessions.pop(client_id, None)
         if session is None:
             return
+
+        self._total_disconnects += 1
 
         try:
             await session.socket.close(code=close_code)

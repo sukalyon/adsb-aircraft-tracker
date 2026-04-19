@@ -17,6 +17,7 @@ from app.streaming.contracts import (
     STREAM_CONTRACT_VERSION,
     build_delta_event,
     build_snapshot_event,
+    prepare_delta_changes,
 )
 
 
@@ -117,6 +118,38 @@ class StreamingContractTests(unittest.TestCase):
         payload = event.to_dict()
 
         self.assertEqual(payload["changes"], [])
+
+    def test_delta_preparation_suppresses_non_wire_updates(self) -> None:
+        store = AircraftStateStore()
+        store.apply(
+            AircraftTelemetry(
+                aircraft_id="4ca123",
+                captured_at=parse_timestamp("2026-04-14T10:00:00Z"),
+                source="readsb",
+                callsign="THY7AB",
+                latitude=41.0,
+                longitude=29.0,
+                altitude_ft=30000,
+                ground_speed_kt=430.0,
+                heading_deg=90.0,
+                squawk="1000",
+            )
+        )
+        non_wire_update = store.apply(
+            AircraftTelemetry(
+                aircraft_id="4ca123",
+                captured_at=parse_timestamp("2026-04-14T10:00:05Z"),
+                source="readsb",
+                squawk="2000",
+            )
+        )
+
+        prepared = prepare_delta_changes([non_wire_update])
+
+        self.assertEqual(prepared.delta_changes, [])
+        self.assertEqual(prepared.seen_change_count, 1)
+        self.assertEqual(prepared.publishable_change_count, 0)
+        self.assertEqual(prepared.suppressed_change_count, 1)
 
 
 if __name__ == "__main__":

@@ -84,7 +84,8 @@ class RealtimeWebSocketHubTests(unittest.IsolatedAsyncioTestCase):
 
         delivered = await hub.publish_delta([change])
 
-        self.assertEqual(delivered, 1)
+        self.assertEqual(delivered.delivered_client_count, 1)
+        self.assertEqual(delivered.emitted_change_count, 1)
         self.assertEqual(len(socket.messages), 2)
         self.assertEqual(socket.messages[1]["type"], "delta")
         self.assertEqual(socket.messages[1]["sequence"], 2)
@@ -152,7 +153,8 @@ class RealtimeWebSocketHubTests(unittest.IsolatedAsyncioTestCase):
 
         delivered = await hub.publish_delta([ignored])
 
-        self.assertEqual(delivered, 0)
+        self.assertEqual(delivered.delivered_client_count, 0)
+        self.assertEqual(delivered.suppressed_change_count, 1)
         self.assertEqual(len(socket.messages), 1)
 
     async def test_failed_client_is_removed_on_publish_error(self) -> None:
@@ -176,11 +178,48 @@ class RealtimeWebSocketHubTests(unittest.IsolatedAsyncioTestCase):
 
         delivered = await hub.publish_delta([change])
 
-        self.assertEqual(delivered, 1)
+        self.assertEqual(delivered.delivered_client_count, 1)
+        self.assertEqual(delivered.dropped_client_count, 1)
         self.assertEqual(hub.connected_count, 1)
         self.assertTrue(broken_socket.closed)
         self.assertEqual(broken_socket.close_code, 1011)
         self.assertFalse(healthy_socket.closed)
+
+    async def test_metrics_snapshot_tracks_publish_totals(self) -> None:
+        store = AircraftStateStore()
+        hub = RealtimeWebSocketHub()
+        socket = FakeWebSocket()
+
+        await hub.connect(socket, snapshot_states=store.snapshot())
+        change = store.apply(
+            AircraftTelemetry(
+                aircraft_id="4ca123",
+                captured_at=parse_timestamp("2026-04-14T11:00:00Z"),
+                source="readsb",
+                callsign="THY7AB",
+                latitude=41.0,
+                longitude=29.0,
+                altitude_ft=30000,
+                ground_speed_kt=430.0,
+                heading_deg=90.0,
+            )
+        )
+
+        result = await hub.publish_delta([change])
+        metrics = hub.metrics_snapshot()
+
+        self.assertEqual(result.delivered_client_count, 1)
+        self.assertEqual(metrics.connected_client_count, 1)
+        self.assertEqual(metrics.total_connections_accepted, 1)
+        self.assertEqual(metrics.total_snapshot_messages_sent, 1)
+        self.assertEqual(metrics.total_delta_publish_calls, 1)
+        self.assertEqual(metrics.total_delta_messages_sent, 1)
+        self.assertEqual(metrics.total_delta_change_entries_sent, 1)
+        self.assertEqual(metrics.total_seen_state_changes, 1)
+        self.assertEqual(metrics.total_publishable_state_changes, 1)
+        self.assertEqual(metrics.total_suppressed_state_changes, 0)
+        self.assertIsNotNone(metrics.last_snapshot_sent_at)
+        self.assertIsNotNone(metrics.last_delta_sent_at)
 
 
 if __name__ == "__main__":
