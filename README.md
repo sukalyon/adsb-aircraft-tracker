@@ -12,16 +12,17 @@ The goal of this project is not to clone an existing flight tracking product. Th
 
 ## Current Status
 
-The repository currently contains the backend foundation and realtime distribution contract for the first two phases:
+The repository currently contains the backend foundation and the first validation client for the first three phases:
 
 - Phase 1: source contract, ingestion adapter, normalization pipeline, in-memory aircraft state store, debug tooling
-- Phase 2: snapshot/delta stream contract, websocket hub, framework adapter boundary
+- Phase 2: snapshot/delta stream contract, websocket hub, framework adapter boundary, change detection, and stream observability
+- Phase 3: static 2D validation client scaffold with live WebSocket mode and built-in sample mode
 
 What is not finished yet:
 
 - a runnable FastAPI application bootstrap
 - decoder polling against a live `readsb` endpoint or file source
-- 2D validation client
+- deeper 2D validation features such as filters and performance controls
 - 3D Cesium client
 - analytics, replay, and packaging
 
@@ -64,6 +65,9 @@ The project is built around a clear separation of responsibilities:
 - `backend/app/api`
   Thin framework adapter layer for a future FastAPI websocket endpoint
 
+- `frontend/client-2d`
+  Leaflet-based validation client for snapshot/delta stream verification
+
 ## Repository Layout
 
 ```text
@@ -97,11 +101,22 @@ You can inspect the Phase 1 pipeline with:
 python3 scripts/debug_state_view.py --snapshot samples/fixtures/readsb/basic_snapshot.json
 ```
 
+You can run the 2D validation client with:
+
+```bash
+cd frontend/client-2d
+python3 -m http.server 8080
+```
+
+Then open `http://localhost:8080` and either:
+
+- connect to a live websocket backend
+- or run the built-in sample stream
+
 ## Roadmap
 
 - Connect the websocket hub to a runnable backend application
-- Add change metrics and publish observability
-- Build a 2D validation client
+- Expand the 2D validation client with filters and performance checks
 - Build the Cesium 3D client
 - Add recording, replay, and analytics
 

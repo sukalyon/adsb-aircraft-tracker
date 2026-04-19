@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ADS-B 2D Validation Client</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="title-block">
+          <p class="eyebrow">Phase 3 Validation</p>
+          <h1>2D Aircraft Track Monitor</h1>
+          <p class="subtitle">
+            Use this client to validate snapshot/delta behavior, aircraft identity reconciliation,
+            live movement, and bounded trail rendering before moving into 3D.
+          </p>
+        </div>
+        <div class="connection-card">
+          <label class="field">
+            <span>WebSocket URL</span>
+            <input id="ws-url" type="text" spellcheck="false" />
+          </label>
+          <div class="connection-actions">
+            <button id="connect-live" type="button">Connect Live</button>
+            <button id="start-sample" type="button" class="secondary">Run Sample</button>
+            <button id="stop-source" type="button" class="secondary">Stop</button>
+            <button id="fit-aircraft" type="button" class="secondary">Fit Aircraft</button>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Status</span>
+            <span id="connection-status" class="status-pill status-idle">Idle</span>
+            <span id="source-mode" class="source-pill">none</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="map-panel">
+          <div id="map"></div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="panel">
+            <h2>Stream Stats</h2>
+            <dl class="stats-grid">
+              <div>
+                <dt>Connected</dt>
+                <dd id="stat-connected">no</dd>
+              </div>
+              <div>
+                <dt>Active Aircraft</dt>
+                <dd id="stat-aircraft-count">0</dd>
+              </div>
+              <div>
+                <dt>Snapshots</dt>
+                <dd id="stat-snapshots">0</dd>
+              </div>
+              <div>
+                <dt>Deltas</dt>
+                <dd id="stat-deltas">0</dd>
+              </div>
+              <div>
+                <dt>Upserts</dt>
+                <dd id="stat-upserts">0</dd>
+              </div>
+              <div>
+                <dt>Removals</dt>
+                <dd id="stat-removals">0</dd>
+              </div>
+              <div>
+                <dt>Last Sequence</dt>
+                <dd id="stat-sequence">-</dd>
+              </div>
+              <div>
+                <dt>Selected</dt>
+                <dd id="stat-selected">none</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="panel">
+            <h2>Selected Aircraft</h2>
+            <dl id="selected-aircraft" class="details-list">
+              <div>
+                <dt>State</dt>
+                <dd>No aircraft selected.</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="panel">
+            <h2>Event Log</h2>
+            <ol id="event-log" class="event-log"></ol>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
