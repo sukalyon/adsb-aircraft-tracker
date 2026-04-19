@@ -25,5 +25,6 @@ dist/
 .DS_Store
 
 # Local planning notes kept outside the public repository
+adsb-aircraft-tracker_project_overview.md
 adsb-aircraft-tracker_execution_plan.md
 adsb-aircraft-tracker_project_log.md
