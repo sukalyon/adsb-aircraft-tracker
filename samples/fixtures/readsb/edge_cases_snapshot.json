@@ -1,0 +1,34 @@
+{
+  "source": "readsb",
+  "captured_at": "2026-04-13T09:00:05Z",
+  "aircraft": [
+    {
+      "hex": "4CA123",
+      "flight": " THY7AB",
+      "gs": 441.2,
+      "track": 93.1,
+      "baro_rate": 64,
+      "squawk": "4453",
+      "category": "A3"
+    },
+    {
+      "hex": "",
+      "flight": "NOHEX1",
+      "lat": 41.1122,
+      "lon": 29.0143,
+      "alt_baro": 20000
+    },
+    {
+      "hex": "A00001",
+      "flight": "KAC77",
+      "lat": 39.1122,
+      "lon": 35.0143,
+      "alt_geom": 10400,
+      "gs": 210.0,
+      "track": 181.2,
+      "geom_rate": -640,
+      "squawk": "2201",
+      "category": "A5"
+    }
+  ]
+}

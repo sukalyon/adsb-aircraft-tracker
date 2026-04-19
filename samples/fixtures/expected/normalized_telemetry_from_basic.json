@@ -1,0 +1,30 @@
+[
+  {
+    "aircraft_id": "4ca123",
+    "captured_at": "2026-04-13T09:00:00Z",
+    "source": "readsb",
+    "callsign": "THY7AB",
+    "squawk": "4453",
+    "category": "A3",
+    "latitude": 41.2758,
+    "longitude": 28.7519,
+    "altitude_ft": 32000,
+    "ground_speed_kt": 438.5,
+    "heading_deg": 92.4,
+    "vertical_rate_fpm": 0
+  },
+  {
+    "aircraft_id": "a8b42f",
+    "captured_at": "2026-04-13T09:00:00Z",
+    "source": "readsb",
+    "callsign": "PGT2YZ",
+    "squawk": "1274",
+    "category": "A1",
+    "latitude": 40.9634,
+    "longitude": 29.3092,
+    "altitude_ft": 11825,
+    "ground_speed_kt": 214.8,
+    "heading_deg": 241.7,
+    "vertical_rate_fpm": -512
+  }
+]
