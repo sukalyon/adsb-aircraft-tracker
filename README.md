@@ -16,12 +16,10 @@ The repository currently contains the backend foundation and the first validatio
 
 - Phase 1: source contract, ingestion adapter, normalization pipeline, in-memory aircraft state store, debug tooling
 - Phase 2: snapshot/delta stream contract, websocket hub, framework adapter boundary, change detection, and stream observability
-- Phase 3: static 2D validation client scaffold with live WebSocket mode and built-in sample mode
+- Phase 3: runnable 2D validation POC with a FastAPI bootstrap, live WebSocket mode, built-in sample mode, and a decoder file polling path
 
 What is not finished yet:
 
-- a runnable FastAPI application bootstrap
-- decoder polling against a live `readsb` endpoint or file source
 - deeper 2D validation features such as filters and performance controls
 - 3D Cesium client
 - analytics, replay, and packaging
@@ -63,7 +61,10 @@ The project is built around a clear separation of responsibilities:
   Snapshot/delta event contract and websocket connection hub
 
 - `backend/app/api`
-  Thin framework adapter layer for a future FastAPI websocket endpoint
+  Thin FastAPI adapter layer for realtime, monitoring, and local client mounting
+
+- `backend/app/runtime`
+  Live pipeline coordinator and decoder file polling runtime for the validation POC
 
 - `frontend/client-2d`
   Leaflet-based validation client for snapshot/delta stream verification
@@ -101,7 +102,28 @@ You can inspect the Phase 1 pipeline with:
 python3 scripts/debug_state_view.py --snapshot samples/fixtures/readsb/basic_snapshot.json
 ```
 
-You can run the 2D validation client with:
+Install backend runtime dependencies with:
+
+```bash
+python3 -m pip install -r backend/requirements.txt
+```
+
+You can run the default 2D validation POC with the built-in sample feed:
+
+```bash
+cd backend
+python3 -m app.main
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/client-2d/
+```
+
+The client will auto-fill the local websocket URL and can connect to the live backend immediately.
+
+You can also run the 2D client standalone with:
 
 ```bash
 cd frontend/client-2d
@@ -113,6 +135,28 @@ Then open `http://localhost:8080` and either:
 - connect to a live websocket backend
 - or run the built-in sample stream
 
+To poll a real decoder file such as `readsb` or `dump1090` `aircraft.json`, start the backend in file mode:
+
+```bash
+cd backend
+ADSB_SOURCE_MODE=readsb_file \
+ADSB_SOURCE_NAME=dump1090 \
+ADSB_DECODER_TYPE=dump1090 \
+ADSB_READSB_SNAPSHOT_PATH=/absolute/path/to/aircraft.json \
+python3 -m app.main
+```
+
+Optional runtime configuration:
+
+- `ADSB_STALE_AFTER_SECONDS`
+  Override stale track eviction timing. The default is `12`.
+
+- `ADSB_POLL_INTERVAL_SECONDS`
+  Override how often the backend polls the decoder file. The default is `1.0`.
+
+- `ADSB_SAMPLE_INTERVAL_SECONDS`
+  Override the built-in sample feed tick interval. The default is `1.2`.
+
 ## Roadmap
 
 - Connect the websocket hub to a runnable backend application
@@ -122,7 +166,7 @@ Then open `http://localhost:8080` and either:
 
 ## Tech Direction
 
-- Decoder: `readsb` or compatible ADS-B JSON source
+- Decoder: `readsb`, `dump1090`, or a compatible ADS-B JSON source
 - Backend: Python
 - Realtime transport: WebSocket
 - 3D frontend target: CesiumJS
