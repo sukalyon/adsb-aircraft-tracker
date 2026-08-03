@@ -6,22 +6,21 @@ from app.state.store import AircraftStateStore
 from app.streaming.websocket import RealtimeWebSocketHub
 
 
-def create_realtime_router(
+def register_realtime_websocket(
+    app: Any,
     *,
     hub: RealtimeWebSocketHub,
     state_store: AircraftStateStore,
-) -> Any:
-    """Create the websocket router that exposes the realtime aircraft stream."""
+) -> None:
+    """Register the realtime websocket endpoint directly on the FastAPI app."""
     try:
-        from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+        from fastapi import WebSocket, WebSocketDisconnect
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "FastAPI must be installed to create the realtime websocket router."
+            "FastAPI must be installed to register the realtime websocket route."
         ) from exc
 
-    router = APIRouter()
-
-    @router.websocket("/ws/aircraft")
+    @app.websocket("/ws/aircraft")
     async def aircraft_stream(websocket: WebSocket) -> None:
         client_id = await hub.connect(
             websocket,
@@ -34,5 +33,3 @@ def create_realtime_router(
             pass
         finally:
             await hub.disconnect(client_id)
-
-    return router

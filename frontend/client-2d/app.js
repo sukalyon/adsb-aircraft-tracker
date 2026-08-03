@@ -1,24 +1,35 @@
+import {
+  applyDeltaEventToDomainState,
+  applySnapshotEventToDomainState,
+  createClientDomainState,
+  getSelectedAircraft,
+  selectAircraftInDomainState,
+} from "./state.mjs";
+import { createRenderPlan } from "./render-state.mjs";
+
 const DEFAULT_CENTER = [41.0082, 28.9784];
 const DEFAULT_ZOOM = 7;
-const DEFAULT_WS_URL = "ws://localhost:8000/ws/aircraft";
-const TRAIL_MAX_POINTS = 16;
+const DEFAULT_WS_URL = buildDefaultWebSocketUrl();
+const DEFAULT_AIRCRAFT_API_URL = buildDefaultAircraftApiUrl();
 const MAX_LOG_ENTRIES = 14;
 const SAMPLE_TICK_MS = 1200;
+const LIVE_POLL_INTERVAL_MS = 1000;
 
-const activeAircraft = new Map();
+const domainState = createClientDomainState({ trailMaxPoints: 16 });
 const renderState = new Map();
 
 const runtime = {
   websocket: null,
   sampleTimer: null,
+  livePollTimer: null,
   sourceMode: "none",
+  transportMode: "none",
   connectionStatus: "idle",
   snapshots: 0,
   deltas: 0,
   upserts: 0,
   removals: 0,
   lastSequence: null,
-  selectedAircraftId: null,
 };
 
 const elements = {
@@ -62,13 +73,32 @@ function initializeUi() {
   elements.fitAircraftButton.addEventListener("click", fitAircraftBounds);
 }
 
+function buildDefaultWebSocketUrl() {
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}/ws/aircraft`;
+  }
+
+  return "ws://localhost:8000/ws/aircraft";
+}
+
+function buildDefaultAircraftApiUrl() {
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    return `${window.location.origin}/api/aircraft`;
+  }
+
+  return "http://127.0.0.1:8000/api/aircraft";
+}
+
 function connectLiveStream() {
   stopCurrentSource();
+  clearVisualizationState();
 
   const url = elements.wsUrlInput.value.trim() || DEFAULT_WS_URL;
   const socket = new WebSocket(url);
   runtime.websocket = socket;
   runtime.sourceMode = "live";
+  runtime.transportMode = "websocket";
   setConnectionStatus("idle", "Connecting");
   pushLog(`Connecting to ${url}`);
 
@@ -93,7 +123,12 @@ function connectLiveStream() {
   socket.addEventListener("close", () => {
     if (runtime.websocket === socket) {
       runtime.websocket = null;
+      if (runtime.sourceMode === "live" && runtime.transportMode === "websocket") {
+        startLivePollingFallback();
+        return;
+      }
       runtime.sourceMode = "none";
+      runtime.transportMode = "none";
       setConnectionStatus("idle", "Disconnected");
       pushLog("WebSocket disconnected");
       updateSidebar();
@@ -101,15 +136,18 @@ function connectLiveStream() {
   });
 
   socket.addEventListener("error", () => {
-    setConnectionStatus("error", "Connection error");
-    pushLog("WebSocket connection error");
+    if (runtime.websocket === socket && runtime.sourceMode === "live") {
+      pushLog("WebSocket connection error");
+    }
   });
 }
 
 function startSampleStream() {
   stopCurrentSource();
+  clearVisualizationState();
 
   runtime.sourceMode = "sample";
+  runtime.transportMode = "sample";
   setConnectionStatus("sample", "Sample feed");
   pushLog("Sample stream started");
 
@@ -210,11 +248,83 @@ function stopCurrentSource() {
     runtime.sampleTimer = null;
   }
 
+  if (runtime.livePollTimer !== null) {
+    window.clearInterval(runtime.livePollTimer);
+    runtime.livePollTimer = null;
+  }
+
   if (runtime.sourceMode !== "none") {
     runtime.sourceMode = "none";
+    runtime.transportMode = "none";
     setConnectionStatus("idle", "Stopped");
     updateSidebar();
   }
+}
+
+function startLivePollingFallback() {
+  if (runtime.sourceMode !== "live") {
+    return;
+  }
+
+  if (runtime.livePollTimer !== null) {
+    return;
+  }
+
+  runtime.transportMode = "polling";
+  setConnectionStatus("live", "Polling live");
+  pushLog(`WebSocket unavailable, falling back to ${DEFAULT_AIRCRAFT_API_URL}`);
+
+  void pollLiveAircraftSnapshot();
+  runtime.livePollTimer = window.setInterval(() => {
+    void pollLiveAircraftSnapshot();
+  }, LIVE_POLL_INTERVAL_MS);
+}
+
+async function pollLiveAircraftSnapshot() {
+  try {
+    const response = await fetch(DEFAULT_AIRCRAFT_API_URL, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    applySnapshotEvent({
+      type: "snapshot",
+      sequence: Number(runtime.lastSequence || 0) + 1,
+      sent_at: new Date().toISOString(),
+      aircraft: payload.aircraft.map((aircraft) => ({
+        aircraft_id: aircraft.aircraft_id,
+        callsign: aircraft.callsign,
+        latitude: aircraft.latitude,
+        longitude: aircraft.longitude,
+        altitude_ft: aircraft.altitude_ft,
+        ground_speed_kt: aircraft.ground_speed_kt,
+        heading_deg: aircraft.heading_deg,
+        updated_at: aircraft.last_seen,
+      })),
+    });
+  } catch (error) {
+    setConnectionStatus("error", "Polling error");
+    pushLog(`Live polling error: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function clearVisualizationState() {
+  for (const aircraftId of Array.from(renderState.keys())) {
+    removeAircraftRender(aircraftId);
+  }
+
+  domainState.aircraft.clear();
+  domainState.selectedAircraftId = null;
+  runtime.snapshots = 0;
+  runtime.deltas = 0;
+  runtime.upserts = 0;
+  runtime.removals = 0;
+  runtime.lastSequence = null;
+  elements.eventLog.innerHTML = "";
+  updateSidebar();
 }
 
 function handleStreamMessage(message) {
@@ -236,21 +346,12 @@ function applySnapshotEvent(event) {
   runtime.lastSequence = event.sequence ?? runtime.lastSequence;
   setConnectionStatus(runtime.sourceMode === "sample" ? "sample" : "live", "Streaming");
 
-  const seenIds = new Set();
-  const aircraftEntries = Array.isArray(event.aircraft) ? event.aircraft : [];
+  const summary = applySnapshotEventToDomainState(domainState, event);
+  runtime.upserts += summary.upsertedAircraftIds.length;
+  runtime.removals += summary.removedAircraftIds.length;
+  reconcileMapRenderState();
 
-  for (const aircraft of aircraftEntries) {
-    seenIds.add(aircraft.aircraft_id);
-    upsertAircraft(aircraft);
-  }
-
-  for (const aircraftId of Array.from(activeAircraft.keys())) {
-    if (!seenIds.has(aircraftId)) {
-      removeAircraft(aircraftId);
-    }
-  }
-
-  pushLog(`Snapshot received with ${aircraftEntries.length} aircraft`);
+  pushLog(`Snapshot received with ${summary.upsertedAircraftIds.length} aircraft`);
   updateSidebar();
 }
 
@@ -258,112 +359,68 @@ function applyDeltaEvent(event) {
   runtime.deltas += 1;
   runtime.lastSequence = event.sequence ?? runtime.lastSequence;
 
-  const changes = Array.isArray(event.changes) ? event.changes : [];
-  for (const change of changes) {
-    if (change.action === "upsert" && change.aircraft) {
-      runtime.upserts += 1;
-      upsertAircraft(change.aircraft);
-      continue;
-    }
+  const summary = applyDeltaEventToDomainState(domainState, event);
+  runtime.upserts += summary.upsertedAircraftIds.length;
+  runtime.removals += summary.removedAircraftIds.length;
+  reconcileMapRenderState();
 
-    if (change.action === "remove") {
-      runtime.removals += 1;
-      removeAircraft(change.aircraft_id);
-      continue;
-    }
-  }
-
-  pushLog(`Delta received with ${changes.length} changes`);
+  pushLog(`Delta received with ${summary.upsertedAircraftIds.length + summary.removedAircraftIds.length} changes`);
   updateSidebar();
 }
 
-function upsertAircraft(aircraft) {
-  const previous = activeAircraft.get(aircraft.aircraft_id);
-  const next = {
-    aircraft_id: aircraft.aircraft_id,
-    callsign: aircraft.callsign ?? previous?.callsign ?? null,
-    latitude: aircraft.latitude ?? previous?.latitude ?? null,
-    longitude: aircraft.longitude ?? previous?.longitude ?? null,
-    altitude_ft: aircraft.altitude_ft ?? previous?.altitude_ft ?? null,
-    ground_speed_kt: aircraft.ground_speed_kt ?? previous?.ground_speed_kt ?? null,
-    heading_deg: aircraft.heading_deg ?? previous?.heading_deg ?? null,
-    updated_at: aircraft.updated_at ?? previous?.updated_at ?? null,
-    trail: previous?.trail ? [...previous.trail] : [],
-  };
+function reconcileMapRenderState() {
+  const plan = createRenderPlan({
+    aircraft: domainState.aircraft,
+    renderState,
+    selectedAircraftId: domainState.selectedAircraftId,
+  });
 
-  appendTrailPoint(next);
-  activeAircraft.set(next.aircraft_id, next);
-  syncAircraftRender(next);
+  for (const removal of plan.remove) {
+    removeAircraftRender(removal.aircraftId);
+  }
 
-  if (runtime.selectedAircraftId === next.aircraft_id) {
-    updateSelectedAircraftPanel();
+  for (const creation of plan.create) {
+    createAircraftRender(creation.aircraft);
+  }
+
+  for (const update of plan.update) {
+    updateAircraftRender(update.aircraft, update.isSelected);
+  }
+
+  for (const creation of plan.create) {
+    updateAircraftRender(creation.aircraft, creation.isSelected);
   }
 }
 
-function removeAircraft(aircraftId) {
-  activeAircraft.delete(aircraftId);
-  const renderEntry = renderState.get(aircraftId);
-  if (renderEntry) {
-    renderEntry.marker.remove();
-    renderEntry.trail.remove();
-    renderState.delete(aircraftId);
-  }
-
-  if (runtime.selectedAircraftId === aircraftId) {
-    runtime.selectedAircraftId = null;
-    updateSelectedAircraftPanel();
-  }
-}
-
-function appendTrailPoint(aircraft) {
-  if (aircraft.latitude == null || aircraft.longitude == null) {
-    return;
-  }
-
-  const nextPoint = [aircraft.latitude, aircraft.longitude];
-  const lastPoint = aircraft.trail.at(-1);
-  if (lastPoint && lastPoint[0] === nextPoint[0] && lastPoint[1] === nextPoint[1]) {
-    return;
-  }
-
-  aircraft.trail.push(nextPoint);
-  if (aircraft.trail.length > TRAIL_MAX_POINTS) {
-    aircraft.trail.splice(0, aircraft.trail.length - TRAIL_MAX_POINTS);
-  }
-}
-
-function syncAircraftRender(aircraft) {
-  if (aircraft.latitude == null || aircraft.longitude == null) {
-    return;
-  }
-
-  const isSelected = runtime.selectedAircraftId === aircraft.aircraft_id;
+function createAircraftRender(aircraft) {
   const position = [aircraft.latitude, aircraft.longitude];
-  let renderEntry = renderState.get(aircraft.aircraft_id);
+  const marker = L.marker(position, {
+    icon: buildAircraftIcon(aircraft.heading_deg, false),
+    keyboard: false,
+  }).addTo(map);
 
-  if (!renderEntry) {
-    const marker = L.marker(position, {
-      icon: buildAircraftIcon(aircraft.heading_deg, isSelected),
-      keyboard: false,
-    }).addTo(map);
+  marker.on("click", () => {
+    selectAircraftInDomainState(domainState, aircraft.aircraft_id);
+    reconcileMapRenderState();
+    updateSidebar();
+  });
 
-    marker.on("click", () => {
-      runtime.selectedAircraftId = aircraft.aircraft_id;
-      refreshAllMarkerIcons();
-      updateSelectedAircraftPanel();
-      updateSidebar();
-    });
+  const trail = L.polyline(aircraft.trail, {
+    color: "#0d8f72",
+    weight: 3,
+    opacity: 0.7,
+  }).addTo(map);
 
-    const trail = L.polyline(aircraft.trail, {
-      color: isSelected ? "#bb5a2a" : "#0d8f72",
-      weight: isSelected ? 4 : 3,
-      opacity: 0.7,
-    }).addTo(map);
+  renderState.set(aircraft.aircraft_id, { marker, trail });
+}
 
-    renderEntry = { marker, trail };
-    renderState.set(aircraft.aircraft_id, renderEntry);
+function updateAircraftRender(aircraft, isSelected) {
+  const renderEntry = renderState.get(aircraft.aircraft_id);
+  if (!renderEntry || aircraft.latitude == null || aircraft.longitude == null) {
+    return;
   }
 
+  const position = [aircraft.latitude, aircraft.longitude];
   renderEntry.marker.setLatLng(position);
   renderEntry.marker.setIcon(buildAircraftIcon(aircraft.heading_deg, isSelected));
   renderEntry.marker.bindTooltip(aircraft.callsign || aircraft.aircraft_id, {
@@ -378,10 +435,15 @@ function syncAircraftRender(aircraft) {
   });
 }
 
-function refreshAllMarkerIcons() {
-  for (const aircraft of activeAircraft.values()) {
-    syncAircraftRender(aircraft);
+function removeAircraftRender(aircraftId) {
+  const renderEntry = renderState.get(aircraftId);
+  if (!renderEntry) {
+    return;
   }
+
+  renderEntry.marker.remove();
+  renderEntry.trail.remove();
+  renderState.delete(aircraftId);
 }
 
 function buildAircraftIcon(headingDeg, isSelected) {
@@ -398,19 +460,19 @@ function buildAircraftIcon(headingDeg, isSelected) {
 
 function updateSidebar() {
   elements.statConnected.textContent = runtime.connectionStatus === "live" ? "yes" : "no";
-  elements.statAircraftCount.textContent = String(activeAircraft.size);
+  elements.statAircraftCount.textContent = String(domainState.aircraft.size);
   elements.statSnapshots.textContent = String(runtime.snapshots);
   elements.statDeltas.textContent = String(runtime.deltas);
   elements.statUpserts.textContent = String(runtime.upserts);
   elements.statRemovals.textContent = String(runtime.removals);
   elements.statSequence.textContent = runtime.lastSequence == null ? "-" : String(runtime.lastSequence);
-  elements.statSelected.textContent = runtime.selectedAircraftId ?? "none";
+  elements.statSelected.textContent = domainState.selectedAircraftId ?? "none";
   elements.sourceMode.textContent = runtime.sourceMode;
   updateSelectedAircraftPanel();
 }
 
 function updateSelectedAircraftPanel() {
-  const selected = runtime.selectedAircraftId ? activeAircraft.get(runtime.selectedAircraftId) : null;
+  const selected = getSelectedAircraft(domainState);
 
   if (!selected) {
     elements.selectedAircraft.innerHTML = `
@@ -456,7 +518,7 @@ function pushLog(message) {
 
 function fitAircraftBounds() {
   const bounds = [];
-  for (const aircraft of activeAircraft.values()) {
+  for (const aircraft of domainState.aircraft.values()) {
     if (aircraft.latitude != null && aircraft.longitude != null) {
       bounds.push([aircraft.latitude, aircraft.longitude]);
     }
