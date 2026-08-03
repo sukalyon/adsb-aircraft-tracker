@@ -9,9 +9,11 @@ import { createRenderPlan } from "./render-state.mjs";
 
 const DEFAULT_CENTER = [41.0082, 28.9784];
 const DEFAULT_ZOOM = 7;
-const DEFAULT_WS_URL = "ws://localhost:8000/ws/aircraft";
+const DEFAULT_WS_URL = buildDefaultWebSocketUrl();
+const DEFAULT_AIRCRAFT_API_URL = buildDefaultAircraftApiUrl();
 const MAX_LOG_ENTRIES = 14;
 const SAMPLE_TICK_MS = 1200;
+const LIVE_POLL_INTERVAL_MS = 1000;
 
 const domainState = createClientDomainState({ trailMaxPoints: 16 });
 const renderState = new Map();
@@ -19,7 +21,9 @@ const renderState = new Map();
 const runtime = {
   websocket: null,
   sampleTimer: null,
+  livePollTimer: null,
   sourceMode: "none",
+  transportMode: "none",
   connectionStatus: "idle",
   snapshots: 0,
   deltas: 0,
@@ -69,6 +73,23 @@ function initializeUi() {
   elements.fitAircraftButton.addEventListener("click", fitAircraftBounds);
 }
 
+function buildDefaultWebSocketUrl() {
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}/ws/aircraft`;
+  }
+
+  return "ws://localhost:8000/ws/aircraft";
+}
+
+function buildDefaultAircraftApiUrl() {
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    return `${window.location.origin}/api/aircraft`;
+  }
+
+  return "http://127.0.0.1:8000/api/aircraft";
+}
+
 function connectLiveStream() {
   stopCurrentSource();
   clearVisualizationState();
@@ -77,6 +98,7 @@ function connectLiveStream() {
   const socket = new WebSocket(url);
   runtime.websocket = socket;
   runtime.sourceMode = "live";
+  runtime.transportMode = "websocket";
   setConnectionStatus("idle", "Connecting");
   pushLog(`Connecting to ${url}`);
 
@@ -101,7 +123,12 @@ function connectLiveStream() {
   socket.addEventListener("close", () => {
     if (runtime.websocket === socket) {
       runtime.websocket = null;
+      if (runtime.sourceMode === "live" && runtime.transportMode === "websocket") {
+        startLivePollingFallback();
+        return;
+      }
       runtime.sourceMode = "none";
+      runtime.transportMode = "none";
       setConnectionStatus("idle", "Disconnected");
       pushLog("WebSocket disconnected");
       updateSidebar();
@@ -109,8 +136,9 @@ function connectLiveStream() {
   });
 
   socket.addEventListener("error", () => {
-    setConnectionStatus("error", "Connection error");
-    pushLog("WebSocket connection error");
+    if (runtime.websocket === socket && runtime.sourceMode === "live") {
+      pushLog("WebSocket connection error");
+    }
   });
 }
 
@@ -119,6 +147,7 @@ function startSampleStream() {
   clearVisualizationState();
 
   runtime.sourceMode = "sample";
+  runtime.transportMode = "sample";
   setConnectionStatus("sample", "Sample feed");
   pushLog("Sample stream started");
 
@@ -219,10 +248,66 @@ function stopCurrentSource() {
     runtime.sampleTimer = null;
   }
 
+  if (runtime.livePollTimer !== null) {
+    window.clearInterval(runtime.livePollTimer);
+    runtime.livePollTimer = null;
+  }
+
   if (runtime.sourceMode !== "none") {
     runtime.sourceMode = "none";
+    runtime.transportMode = "none";
     setConnectionStatus("idle", "Stopped");
     updateSidebar();
+  }
+}
+
+function startLivePollingFallback() {
+  if (runtime.sourceMode !== "live") {
+    return;
+  }
+
+  if (runtime.livePollTimer !== null) {
+    return;
+  }
+
+  runtime.transportMode = "polling";
+  setConnectionStatus("live", "Polling live");
+  pushLog(`WebSocket unavailable, falling back to ${DEFAULT_AIRCRAFT_API_URL}`);
+
+  void pollLiveAircraftSnapshot();
+  runtime.livePollTimer = window.setInterval(() => {
+    void pollLiveAircraftSnapshot();
+  }, LIVE_POLL_INTERVAL_MS);
+}
+
+async function pollLiveAircraftSnapshot() {
+  try {
+    const response = await fetch(DEFAULT_AIRCRAFT_API_URL, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    applySnapshotEvent({
+      type: "snapshot",
+      sequence: Number(runtime.lastSequence || 0) + 1,
+      sent_at: new Date().toISOString(),
+      aircraft: payload.aircraft.map((aircraft) => ({
+        aircraft_id: aircraft.aircraft_id,
+        callsign: aircraft.callsign,
+        latitude: aircraft.latitude,
+        longitude: aircraft.longitude,
+        altitude_ft: aircraft.altitude_ft,
+        ground_speed_kt: aircraft.ground_speed_kt,
+        heading_deg: aircraft.heading_deg,
+        updated_at: aircraft.last_seen,
+      })),
+    });
+  } catch (error) {
+    setConnectionStatus("error", "Polling error");
+    pushLog(`Live polling error: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
