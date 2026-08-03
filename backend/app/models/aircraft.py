@@ -77,6 +77,7 @@ class RawAircraftMessage:
         *,
         captured_at: datetime,
         source: str = "readsb",
+        decoder_type: str = "readsb",
     ) -> "RawAircraftMessage":
         aircraft_id = _clean_text(payload.get("hex"))
         if aircraft_id is None:
@@ -84,7 +85,7 @@ class RawAircraftMessage:
 
         return cls(
             source=source,
-            decoder_type="readsb",
+            decoder_type=decoder_type,
             captured_at=captured_at.astimezone(timezone.utc),
             aircraft_id=aircraft_id.lower(),
             raw_callsign=_clean_text(payload.get("flight")),

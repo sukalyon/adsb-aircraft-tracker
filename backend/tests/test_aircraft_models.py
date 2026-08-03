@@ -113,6 +113,21 @@ class AircraftModelFixtureTests(unittest.TestCase):
         self.assertEqual(len(batch.messages), 2)
         self.assertEqual(len(batch.warnings), 1)
 
+    def test_readsb_file_adapter_accepts_decoder_aircraft_json_shape(self) -> None:
+        adapter = ReadsbFileIngestionAdapter(
+            ROOT / "samples/fixtures/readsb/decoder_aircraft_snapshot.json",
+            source_name="dump1090",
+            decoder_type="dump1090",
+        )
+
+        batch = adapter.ingest()
+
+        self.assertEqual(batch.source, "dump1090")
+        self.assertEqual(batch.captured_at, parse_timestamp("2026-04-18T00:00:00Z"))
+        self.assertEqual(batch.raw_record_count, 2)
+        self.assertEqual(batch.messages[0].decoder_type, "dump1090")
+        self.assertEqual(batch.messages[1].raw_ground_speed_kt, 214.8)
+
     def test_readsb_file_adapter_rejects_invalid_snapshot_shape(self) -> None:
         invalid_path = ROOT / "samples/fixtures/readsb/invalid_snapshot.json"
         invalid_path.write_text('{"source": "readsb", "aircraft": {}}', encoding="utf-8")
