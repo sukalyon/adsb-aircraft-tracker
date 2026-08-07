@@ -11,6 +11,7 @@ const DEFAULT_CENTER = [41.0082, 28.9784];
 const DEFAULT_ZOOM = 5;
 const DEFAULT_WS_URL = buildDefaultWebSocketUrl();
 const DEFAULT_AIRCRAFT_API_URL = buildDefaultAircraftApiUrl();
+const DEFAULT_SOURCE_API_URL = buildDefaultSourceApiUrl();
 const MAX_LOG_ENTRIES = 14;
 const SAMPLE_TICK_MS = 1200;
 const LIVE_POLL_INTERVAL_MS = 1000;
@@ -32,6 +33,13 @@ const runtime = {
   sampleTimer: null,
   livePollTimer: null,
   sourceMode: "none",
+  activeSourceId: null,
+  activeSourceLabel: null,
+  activeSourceKind: "none",
+  selectedSourceId: "sample",
+  selectedSourceLabel: "Sample",
+  sourceOptions: buildFallbackSourceOptions(),
+  sourceControlAvailable: false,
   transportMode: "none",
   connectionStatus: "idle",
   connectionLabel: "Stopped",
@@ -56,8 +64,8 @@ const floatingPanels = {
 const elements = {
   stage: document.querySelector(".tactical-stage"),
   wsUrlInput: document.querySelector("#ws-url"),
-  connectLiveButton: document.querySelector("#connect-live"),
-  startSampleButton: document.querySelector("#start-sample"),
+  sourceSelect: document.querySelector("#source-select"),
+  connectSourceButton: document.querySelector("#connect-source"),
   stopSourceButton: document.querySelector("#stop-source"),
   fitAircraftButton: document.querySelector("#fit-aircraft"),
   clearUiButton: document.querySelector("#clear-ui"),
@@ -117,16 +125,24 @@ updateClockDisplay();
 function initializeUi() {
   elements.wsUrlInput.value = DEFAULT_WS_URL;
   elements.mapStyleSelect.value = runtime.mapStyle;
+  renderSourceOptions();
 
-  elements.connectLiveButton.addEventListener("click", connectLiveStream);
-  elements.startSampleButton.addEventListener("click", startSampleStream);
-  elements.stopSourceButton.addEventListener("click", stopCurrentSource);
+  elements.connectSourceButton.addEventListener("click", () => {
+    void connectSelectedSource();
+  });
+  elements.stopSourceButton.addEventListener("click", () => {
+    void stopCurrentSource();
+  });
   elements.fitAircraftButton.addEventListener("click", fitAircraftBounds);
   elements.clearUiButton.addEventListener("click", clearUiState);
   elements.focusSelectedButton.addEventListener("click", focusSelectedAircraft);
   elements.clearSelectionButton.addEventListener("click", clearSelectedAircraft);
   elements.aircraftSearchInput.addEventListener("input", handleAircraftSearchInput);
   elements.mapStyleSelect.addEventListener("change", handleMapStyleChange);
+  elements.sourceSelect.addEventListener("change", handleSourceSelectionChange);
+  elements.wsUrlInput.addEventListener("change", () => {
+    void handleWebSocketUrlChange();
+  });
   elements.debugDrawer.addEventListener("toggle", queueFloatingPanelLayout);
 
   map.on("click", () => {
@@ -139,6 +155,7 @@ function initializeUi() {
   initializeFloatingPanels();
   window.addEventListener("resize", handleFloatingPanelResize);
   window.setInterval(updateClockDisplay, 1000);
+  void refreshSourceControlState({ quiet: true });
 }
 
 function initializeFloatingPanels() {
@@ -677,11 +694,281 @@ function buildDefaultAircraftApiUrl() {
   return "http://127.0.0.1:8000/api/aircraft";
 }
 
-function connectLiveStream() {
-  stopCurrentSource();
+function buildDefaultSourceApiUrl() {
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    return `${window.location.origin}/api/source`;
+  }
+
+  return "http://127.0.0.1:8000/api/source";
+}
+
+function buildHttpUrlFromWebSocketUrl(webSocketUrl, pathname) {
+  try {
+    const nextUrl = new URL(webSocketUrl);
+    if (nextUrl.protocol !== "ws:" && nextUrl.protocol !== "wss:") {
+      return null;
+    }
+
+    nextUrl.protocol = nextUrl.protocol === "wss:" ? "https:" : "http:";
+    nextUrl.pathname = pathname;
+    nextUrl.search = "";
+    nextUrl.hash = "";
+    return nextUrl.toString();
+  } catch {
+    return null;
+  }
+}
+
+function getConfiguredWebSocketUrl() {
+  return elements.wsUrlInput.value.trim() || DEFAULT_WS_URL;
+}
+
+function getConfiguredAircraftApiUrl() {
+  return buildHttpUrlFromWebSocketUrl(getConfiguredWebSocketUrl(), "/api/aircraft") || DEFAULT_AIRCRAFT_API_URL;
+}
+
+function getConfiguredSourceApiUrl() {
+  return buildHttpUrlFromWebSocketUrl(getConfiguredWebSocketUrl(), "/api/source") || DEFAULT_SOURCE_API_URL;
+}
+
+function buildFallbackSourceOptions(reason = "Live source unavailable", activeSourceId = null) {
+  return [
+    {
+      id: "sample",
+      label: "Sample",
+      kind: "sample",
+      available: true,
+      active: activeSourceId === "sample",
+      reason: null,
+    },
+    {
+      id: "readsb",
+      label: "RTL-SDR / readsb",
+      kind: "live",
+      available: false,
+      active: activeSourceId === "readsb",
+      reason,
+    },
+    {
+      id: "dump1090",
+      label: "RTL-SDR / dump1090",
+      kind: "live",
+      available: false,
+      active: activeSourceId === "dump1090",
+      reason,
+    },
+  ];
+}
+
+function getSourceOption(sourceId) {
+  return runtime.sourceOptions.find((option) => option.id === sourceId) ?? null;
+}
+
+function syncSourceModeFromActiveSource() {
+  if (runtime.activeSourceKind === "live" || runtime.activeSourceKind === "sample") {
+    runtime.sourceMode = runtime.activeSourceKind;
+    return;
+  }
+
+  runtime.sourceMode = "none";
+}
+
+function renderSourceOptions(preferredSourceId = runtime.selectedSourceId) {
+  elements.sourceSelect.innerHTML = "";
+
+  for (const option of runtime.sourceOptions) {
+    const optionElement = document.createElement("option");
+    optionElement.value = option.id;
+    optionElement.textContent = option.available ? option.label : `${option.label} (Unavailable)`;
+    optionElement.disabled = !option.available && !option.active;
+    elements.sourceSelect.appendChild(optionElement);
+  }
+
+  syncSelectedSource(preferredSourceId);
+}
+
+function syncSelectedSource(preferredSourceId = runtime.selectedSourceId) {
+  const selectableSourceIds = runtime.sourceOptions
+    .filter((option) => option.available || option.active)
+    .map((option) => option.id);
+  let nextSourceId = preferredSourceId;
+
+  if (!selectableSourceIds.includes(nextSourceId)) {
+    nextSourceId = runtime.activeSourceId;
+  }
+  if (!selectableSourceIds.includes(nextSourceId)) {
+    nextSourceId = runtime.sourceOptions.find((option) => option.available)?.id ?? runtime.sourceOptions[0]?.id;
+  }
+
+  if (!nextSourceId) {
+    return;
+  }
+
+  const nextOption = getSourceOption(nextSourceId);
+  runtime.selectedSourceId = nextSourceId;
+  runtime.selectedSourceLabel = nextOption?.label ?? "Sample";
+  elements.sourceSelect.value = nextSourceId;
+  elements.sourceSelect.title = nextOption?.reason ?? nextOption?.label ?? "";
+}
+
+function handleSourceSelectionChange(event) {
+  syncSelectedSource(event.currentTarget.value);
+  updatePanels();
+}
+
+async function handleWebSocketUrlChange() {
+  const value = elements.wsUrlInput.value.trim();
+  if (!value) {
+    elements.wsUrlInput.value = DEFAULT_WS_URL;
+  }
+
+  await refreshSourceControlState({ preserveSelection: true, quiet: true });
+}
+
+async function refreshSourceControlState({ preserveSelection = true, quiet = false } = {}) {
+  try {
+    const payload = await requestJson(getConfiguredSourceApiUrl());
+    applySourceControllerPayload(payload, { preserveSelection });
+  } catch (error) {
+    runtime.sourceControlAvailable = false;
+    runtime.sourceOptions = buildFallbackSourceOptions(
+      "Live decoder unavailable",
+      runtime.activeSourceId,
+    );
+    renderSourceOptions(preserveSelection ? runtime.selectedSourceId : runtime.activeSourceId);
+    updatePanels();
+
+    if (!quiet) {
+      pushLog(`Source control unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+function applySourceControllerPayload(payload, { preserveSelection = true } = {}) {
+  const activeSourceId =
+    typeof payload?.active_source_id === "string" && payload.active_source_id.length > 0
+      ? payload.active_source_id
+      : null;
+  const activeSourceLabel =
+    typeof payload?.active_source_label === "string" && payload.active_source_label.length > 0
+      ? payload.active_source_label
+      : null;
+  const activeSourceKind =
+    payload?.active_source_kind === "live" || payload?.active_source_kind === "sample"
+      ? payload.active_source_kind
+      : "none";
+  const sourceOptions = Array.isArray(payload?.sources)
+    ? payload.sources.map((option) => ({
+        id: String(option.id ?? ""),
+        label: String(option.label ?? option.id ?? "").trim(),
+        kind: option.kind === "sample" ? "sample" : "live",
+        available: Boolean(option.available),
+        active: String(option.id ?? "") === activeSourceId,
+        reason:
+          typeof option.reason === "string" && option.reason.length > 0 ? option.reason : null,
+      }))
+    : buildFallbackSourceOptions("Live decoder unavailable", activeSourceId);
+
+  runtime.sourceControlAvailable = true;
+  runtime.activeSourceId = activeSourceId;
+  runtime.activeSourceLabel = activeSourceLabel;
+  runtime.activeSourceKind = activeSourceKind;
+  runtime.sourceOptions = sourceOptions;
+  syncSourceModeFromActiveSource();
+
+  if (!isTransportActive() && runtime.activeSourceId == null) {
+    runtime.connectionStatus = "idle";
+    runtime.connectionLabel = "Stopped";
+  }
+
+  renderSourceOptions(preserveSelection ? runtime.selectedSourceId : runtime.activeSourceId);
+  updatePanels();
+}
+
+async function requestJson(url, init) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    ...init,
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const detail =
+      typeof payload?.detail === "string" && payload.detail.length > 0
+        ? payload.detail
+        : `HTTP ${response.status}`;
+    throw new Error(detail);
+  }
+
+  return payload;
+}
+
+function isTransportActive() {
+  return (
+    runtime.websocket !== null ||
+    runtime.sampleTimer !== null ||
+    runtime.livePollTimer !== null ||
+    runtime.transportMode !== "none"
+  );
+}
+
+async function connectSelectedSource() {
+  const preferredSourceId = elements.sourceSelect.value || runtime.selectedSourceId || "sample";
+  await refreshSourceControlState({ preserveSelection: true, quiet: true });
+  syncSelectedSource(preferredSourceId);
+
+  const selectedSource = getSourceOption(runtime.selectedSourceId);
+  if (!selectedSource) {
+    setConnectionStatus("error", "No source");
+    pushLog("No source is available to connect.");
+    return;
+  }
+
+  if (!selectedSource.available && !selectedSource.active) {
+    setConnectionStatus("error", "Unavailable");
+    pushLog(`${selectedSource.label} is unavailable${selectedSource.reason ? `: ${selectedSource.reason}` : "."}`);
+    return;
+  }
+
+  if (!runtime.sourceControlAvailable) {
+    if (selectedSource.id === "sample") {
+      startSampleStream();
+      return;
+    }
+
+    setConnectionStatus("error", "Unavailable");
+    pushLog(`${selectedSource.label} cannot start without backend source control.`);
+    return;
+  }
+
+  resetLocalTransport();
   clearVisualizationState();
 
-  const url = elements.wsUrlInput.value.trim() || DEFAULT_WS_URL;
+  try {
+    const payload = await requestJson(`${getConfiguredSourceApiUrl()}/select`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ source: selectedSource.id }),
+    });
+    applySourceControllerPayload(payload, { preserveSelection: true });
+  } catch (error) {
+    setConnectionStatus("error", "Source error");
+    pushLog(`Source selection failed: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+
+  connectToWebSocket(getConfiguredWebSocketUrl());
+}
+
+function connectToWebSocket(url) {
   let socket;
 
   try {
@@ -689,21 +976,22 @@ function connectLiveStream() {
   } catch (error) {
     setConnectionStatus("error", "Bad URL");
     pushLog(`WebSocket URL error: ${error instanceof Error ? error.message : String(error)}`);
+    maybeStartLocalSampleFallback("WebSocket could not be created");
     return;
   }
 
   runtime.websocket = socket;
-  runtime.sourceMode = "live";
   runtime.transportMode = "websocket";
   setConnectionStatus("idle", "Connecting");
-  pushLog(`Connecting to ${url}`);
+  pushLog(`Connecting to ${runtime.selectedSourceLabel} via ${url}`);
 
   socket.addEventListener("open", () => {
     if (runtime.websocket !== socket) {
       return;
     }
 
-    setConnectionStatus("live", "Connected");
+    const nextStatus = runtime.sourceMode === "sample" ? "sample" : "live";
+    setConnectionStatus(nextStatus, "Connected");
     pushLog("WebSocket connected");
   });
 
@@ -727,25 +1015,43 @@ function connectLiveStream() {
       return;
     }
 
-    runtime.sourceMode = "none";
+    if (runtime.sourceMode === "sample" && runtime.transportMode === "websocket") {
+      maybeStartLocalSampleFallback("WebSocket disconnected");
+      return;
+    }
+
     runtime.transportMode = "none";
     setConnectionStatus("idle", "Disconnected");
     pushLog("WebSocket disconnected");
   });
 
   socket.addEventListener("error", () => {
-    if (runtime.websocket === socket && runtime.sourceMode === "live") {
+    if (runtime.websocket === socket) {
       pushLog("WebSocket connection error");
     }
   });
 }
 
+function maybeStartLocalSampleFallback(reason) {
+  if (runtime.sourceMode !== "sample") {
+    return;
+  }
+
+  pushLog(`${reason}, falling back to local sample.`);
+  startSampleStream();
+}
+
 function startSampleStream() {
-  stopCurrentSource();
+  resetLocalTransport();
   clearVisualizationState();
 
-  runtime.sourceMode = "sample";
+  runtime.activeSourceId = "sample";
+  runtime.activeSourceLabel = "Sample";
+  runtime.activeSourceKind = "sample";
+  runtime.sourceOptions = buildFallbackSourceOptions("Live decoder unavailable", "sample");
+  syncSourceModeFromActiveSource();
   runtime.transportMode = "sample";
+  renderSourceOptions("sample");
   setConnectionStatus("sample", "Sample active");
   pushLog("Sample stream started");
 
@@ -758,6 +1064,15 @@ function startSampleStream() {
       altitude_ft: 32000,
       ground_speed_kt: 438.5,
       heading_deg: 92,
+      drift_latitude: 0.009,
+      drift_longitude: 0.018,
+      wave_latitude: 0.0028,
+      wave_longitude: 0.0046,
+      wave_phase: 0.0,
+      wave_frequency: 0.42,
+      wave_longitude_frequency: 0.88,
+      altitude_step: 110,
+      speed_step: 0.7,
     },
     {
       aircraft_id: "a8b42f",
@@ -767,6 +1082,16 @@ function startSampleStream() {
       altitude_ft: 11825,
       ground_speed_kt: 214.8,
       heading_deg: 242,
+      drift_latitude: -0.009,
+      drift_longitude: 0.018,
+      wave_latitude: 0.0028,
+      wave_longitude: 0.0046,
+      wave_phase: 0.85,
+      wave_frequency: 0.42,
+      wave_longitude_frequency: 0.88,
+      altitude_step: -160,
+      speed_step: 0.4,
+      remove_after_tick: 48,
     },
     {
       aircraft_id: "71be10",
@@ -776,33 +1101,88 @@ function startSampleStream() {
       altitude_ft: 36500,
       ground_speed_kt: 456.1,
       heading_deg: 118,
+      drift_latitude: 0.009,
+      drift_longitude: 0.018,
+      wave_latitude: 0.0028,
+      wave_longitude: 0.0046,
+      wave_phase: 1.7,
+      wave_frequency: 0.42,
+      wave_longitude_frequency: 0.88,
+      altitude_step: 110,
+      speed_step: 0.7,
+    },
+    {
+      aircraft_id: "45aa71",
+      callsign: "SOF2IZ",
+      latitude: 42.6977,
+      longitude: 23.3219,
+      altitude_ft: 28600,
+      ground_speed_kt: 404.2,
+      heading_deg: 146,
+      drift_latitude: -0.0135,
+      drift_longitude: 0.0152,
+      wave_latitude: 0.0032,
+      wave_longitude: 0.0038,
+      wave_phase: 2.4,
+      wave_frequency: 0.36,
+      wave_longitude_frequency: 0.82,
+      altitude_step: 90,
+      speed_step: 0.5,
+    },
+    {
+      aircraft_id: "3c91ef",
+      callsign: "ESK4EU",
+      latitude: 39.7767,
+      longitude: 30.5206,
+      altitude_ft: 34750,
+      ground_speed_kt: 428.6,
+      heading_deg: 307,
+      drift_latitude: 0.0084,
+      drift_longitude: -0.0186,
+      wave_latitude: 0.0024,
+      wave_longitude: 0.0044,
+      wave_phase: 3.15,
+      wave_frequency: 0.33,
+      wave_longitude_frequency: 0.94,
+      altitude_step: 70,
+      speed_step: 0.6,
     },
   ];
+
+  const buildSampleWireAircraft = (aircraft) => ({
+    aircraft_id: aircraft.aircraft_id,
+    callsign: aircraft.callsign,
+    latitude: Number(aircraft.latitude.toFixed(4)),
+    longitude: Number(aircraft.longitude.toFixed(4)),
+    altitude_ft: Math.round(aircraft.altitude_ft),
+    ground_speed_kt: Number(aircraft.ground_speed_kt.toFixed(1)),
+    heading_deg: Number(aircraft.heading_deg.toFixed(1)),
+    updated_at: new Date().toISOString(),
+  });
 
   runtime.lastSequence = 1;
   applySnapshotEvent({
     type: "snapshot",
     sequence: 1,
     sent_at: new Date().toISOString(),
-    aircraft: sampleAircraft.map((aircraft) => ({
-      ...aircraft,
-      updated_at: new Date().toISOString(),
-    })),
+    aircraft: sampleAircraft.map(buildSampleWireAircraft),
   });
 
   let tick = 0;
   runtime.sampleTimer = window.setInterval(() => {
     tick += 1;
-    const changes = sampleAircraft.map((aircraft, index) => {
+    const changes = sampleAircraft.map((aircraft) => {
       const previousLatitude = aircraft.latitude;
       const previousLongitude = aircraft.longitude;
-      const directionBias = index === 1 ? -1 : 1;
-      const phase = tick * 0.42 + index * 0.85;
+      const phase = tick * aircraft.wave_frequency + aircraft.wave_phase;
 
-      aircraft.latitude += 0.009 * directionBias + Math.sin(phase) * 0.0028;
-      aircraft.longitude += 0.018 + Math.cos(phase * 0.88) * 0.0046;
-      aircraft.altitude_ft += index === 1 ? -160 : 110;
-      aircraft.ground_speed_kt += index === 1 ? 0.4 : 0.7;
+      aircraft.latitude +=
+        aircraft.drift_latitude + Math.sin(phase) * aircraft.wave_latitude;
+      aircraft.longitude +=
+        aircraft.drift_longitude +
+        Math.cos(phase * aircraft.wave_longitude_frequency) * aircraft.wave_longitude;
+      aircraft.altitude_ft += aircraft.altitude_step;
+      aircraft.ground_speed_kt += aircraft.speed_step;
       aircraft.heading_deg = calculateBearingBetweenCoordinates(
         previousLatitude,
         previousLongitude,
@@ -813,21 +1193,22 @@ function startSampleStream() {
       return {
         action: "upsert",
         aircraft_id: aircraft.aircraft_id,
-        aircraft: {
-          ...aircraft,
-          updated_at: new Date().toISOString(),
-        },
+        aircraft: buildSampleWireAircraft(aircraft),
       };
     });
 
-    if (tick === 8) {
+    const removableAircraft = sampleAircraft.find(
+      (aircraft) => aircraft.remove_after_tick != null && tick === aircraft.remove_after_tick,
+    );
+
+    if (removableAircraft) {
       changes.push({
         action: "remove",
-        aircraft_id: "a8b42f",
+        aircraft_id: removableAircraft.aircraft_id,
         reason: "sample_timeout",
       });
       sampleAircraft.splice(
-        sampleAircraft.findIndex((aircraft) => aircraft.aircraft_id === "a8b42f"),
+        sampleAircraft.findIndex((aircraft) => aircraft.aircraft_id === removableAircraft.aircraft_id),
         1,
       );
     }
@@ -842,7 +1223,7 @@ function startSampleStream() {
   }, SAMPLE_TICK_MS);
 }
 
-function stopCurrentSource() {
+function resetLocalTransport() {
   if (runtime.websocket) {
     runtime.websocket.close();
     runtime.websocket = null;
@@ -857,12 +1238,35 @@ function stopCurrentSource() {
     window.clearInterval(runtime.livePollTimer);
     runtime.livePollTimer = null;
   }
+}
 
-  if (runtime.sourceMode !== "none") {
-    runtime.sourceMode = "none";
-    runtime.transportMode = "none";
-    setConnectionStatus("idle", "Stopped");
+async function stopCurrentSource() {
+  if (runtime.sourceControlAvailable && runtime.activeSourceId != null) {
+    try {
+      const payload = await requestJson(`${getConfiguredSourceApiUrl()}/stop`, {
+        method: "POST",
+      });
+      applySourceControllerPayload(payload, { preserveSelection: true });
+    } catch (error) {
+      setConnectionStatus("error", "Stop failed");
+      pushLog(`Unable to stop source: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+  } else {
+    runtime.activeSourceId = null;
+    runtime.activeSourceLabel = null;
+    runtime.activeSourceKind = "none";
+    runtime.sourceOptions = buildFallbackSourceOptions("Live decoder unavailable");
+    syncSourceModeFromActiveSource();
+    renderSourceOptions(runtime.selectedSourceId);
   }
+
+  resetLocalTransport();
+  clearVisualizationState();
+  runtime.transportMode = "none";
+  syncSourceModeFromActiveSource();
+  setConnectionStatus("idle", "Stopped");
+  updatePanels();
 }
 
 function startLivePollingFallback() {
@@ -872,7 +1276,7 @@ function startLivePollingFallback() {
 
   runtime.transportMode = "polling";
   setConnectionStatus("live", "Polling");
-  pushLog(`WebSocket unavailable, falling back to ${DEFAULT_AIRCRAFT_API_URL}`);
+  pushLog(`WebSocket unavailable, falling back to ${getConfiguredAircraftApiUrl()}`);
 
   void pollLiveAircraftSnapshot();
   runtime.livePollTimer = window.setInterval(() => {
@@ -882,7 +1286,7 @@ function startLivePollingFallback() {
 
 async function pollLiveAircraftSnapshot() {
   try {
-    const response = await fetch(DEFAULT_AIRCRAFT_API_URL, {
+    const response = await fetch(getConfiguredAircraftApiUrl(), {
       cache: "no-store",
     });
     if (!response.ok) {
@@ -1307,21 +1711,21 @@ function updatePanels() {
 function updateLiveIndicator() {
   elements.liveIndicator.className = "live-indicator";
 
-  if (runtime.connectionStatus === "live") {
+  if (runtime.connectionStatus === "error") {
+    elements.liveIndicator.classList.add("is-error");
+    elements.liveIndicator.textContent = "Error";
+    return;
+  }
+
+  if (runtime.sourceMode === "live") {
     elements.liveIndicator.classList.add("is-live");
     elements.liveIndicator.textContent = "Live";
     return;
   }
 
-  if (runtime.connectionStatus === "sample") {
+  if (runtime.sourceMode === "sample") {
     elements.liveIndicator.classList.add("is-sample");
     elements.liveIndicator.textContent = "Sample";
-    return;
-  }
-
-  if (runtime.connectionStatus === "error") {
-    elements.liveIndicator.classList.add("is-error");
-    elements.liveIndicator.textContent = "Error";
     return;
   }
 
@@ -1368,7 +1772,7 @@ function updateTrafficList(displayedAircraft, selectedAircraftId) {
   if (displayedAircraft.length === 0) {
     elements.emptyTraffic.textContent = runtime.searchQuery
       ? `No aircraft match "${runtime.searchQuery}".`
-      : "No traffic loaded yet. Connect to a live source or run the sample stream.";
+      : "No traffic loaded yet. Connect to a source to begin.";
     elements.emptyTraffic.hidden = false;
     return;
   }
@@ -1406,8 +1810,7 @@ function updateTrafficList(displayedAircraft, selectedAircraftId) {
 }
 
 function updateDebugStats(selected) {
-  elements.statConnected.textContent =
-    runtime.connectionStatus === "live" || runtime.connectionStatus === "sample" ? "yes" : "no";
+  elements.statConnected.textContent = isTransportActive() ? "yes" : "no";
   elements.statAircraftCount.textContent = String(domainState.aircraft.size);
   elements.statSnapshots.textContent = String(runtime.snapshots);
   elements.statDeltas.textContent = String(runtime.deltas);
@@ -1426,9 +1829,11 @@ function updateFooter() {
 }
 
 function updateControlState(selected) {
-  elements.connectLiveButton.disabled = runtime.sourceMode === "live";
-  elements.startSampleButton.disabled = runtime.sourceMode === "sample";
-  elements.stopSourceButton.disabled = runtime.sourceMode === "none";
+  const selectedSource = getSourceOption(runtime.selectedSourceId);
+  const sourceUnavailable = selectedSource == null || (!selectedSource.available && !selectedSource.active);
+
+  elements.connectSourceButton.disabled = sourceUnavailable || isTransportActive();
+  elements.stopSourceButton.disabled = runtime.activeSourceId == null && !isTransportActive();
   elements.fitAircraftButton.disabled = domainState.aircraft.size === 0;
   elements.clearUiButton.disabled = !selected && runtime.searchQuery.length === 0;
   elements.focusSelectedButton.disabled = !selected;
@@ -1611,13 +2016,7 @@ function setConnectionStatus(kind, label) {
 }
 
 function describeFooterSource() {
-  if (runtime.sourceMode === "sample") {
-    return "Sample feed";
-  }
-  if (runtime.sourceMode === "live") {
-    return "Live feed";
-  }
-  return "None";
+  return runtime.activeSourceLabel ?? "None";
 }
 
 function describeTransport() {
@@ -1628,7 +2027,7 @@ function describeTransport() {
     return "WebSocket";
   }
   if (runtime.transportMode === "sample") {
-    return "Sample timer";
+    return "Local sample";
   }
   return "None";
 }
