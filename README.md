@@ -1,74 +1,176 @@
 # ADS-B Aircraft Tracker
 
-An end-to-end real-time aircraft tracking pipeline built around RTL-SDR, ADS-B decoder output, Python backend processing, and a live 2D operations screen.
+Real-time aircraft tracking built around ADS-B decoder output, a Python backend, and a Leaflet-based 2D operations screen.
 
-The goal of this project is not to clone an existing flight tracking product. The goal is to build a clean, extensible system for:
+![Aircraft Tracker sample demo](docs/assets/aircraft-tracker-sample.gif)
 
-- ingesting real decoder output
-- normalizing live aircraft telemetry
-- maintaining active aircraft state over time
-- streaming updates to connected clients with low latency
-- validating behavior in a clean 2D surface before taking the system into live SDR field use
+## Overview
 
-## Current Status
+This project focuses on the full data path, not just the map:
 
-The repository currently contains the backend foundation, the runnable validation POC, and the first pass of a more operational 2D screen:
+- ingest decoder output such as `readsb` or `dump1090`
+- normalize aircraft telemetry into a stable internal model
+- maintain active aircraft state with bounded trails and stale eviction
+- publish snapshot and delta updates over WebSocket
+- visualize traffic in a cleaner 2D operations UI
 
-- Phase 1: source contract, ingestion adapter, normalization pipeline, in-memory aircraft state store, debug tooling
-- Phase 2: snapshot/delta stream contract, websocket hub, framework adapter boundary, change detection, and stream observability
-- Phase 3: runnable 2D validation POC with a FastAPI bootstrap, live WebSocket mode, built-in sample mode, and a decoder file polling path
-- Phase 4: initial 2D operations-screen redesign with a cleaner information hierarchy, traffic list, selected-flight panel, and improved aircraft symbology
+## What Works Today
 
-What is not finished yet:
+- built-in sample mode for local demo and UI validation
+- 2D tracker served directly from the backend at `/`
+- selectable source modes in the UI:
+  - `Sample`
+  - `RTL-SDR / readsb`
+  - `RTL-SDR / dump1090`
+- snapshot and delta streaming over WebSocket
+- file-based decoder polling for `aircraft.json` style sources
+- selected-flight panel, live traffic list, draggable panels, and aircraft trails
 
-- deeper 2D operational features such as follow modes, richer filtering, and SDR-focused health visibility
-- real-world field validation against a live `readsb` or `dump1090` feed
-- analytics, replay, and packaging
+## What Is Not Finished Yet
 
-## Architecture
+- field validation against a real live SDR capture setup
+- richer operational filters and SDR health visibility
+- replay, recording workflows, and packaging
 
-The project is built around a clear separation of responsibilities:
+## Quick Start
 
-1. Ingestion
-   Read decoder output such as `readsb` JSON snapshots and convert it into a canonical raw message model.
+### Requirements
 
-2. Normalization
-   Clean and validate telemetry fields before they enter the live state pipeline.
+- Python `3.11+`
+- a modern desktop browser
+- optional: Node.js, only if you want to run frontend tests
 
-3. State Aggregation
-   Merge updates by `aircraft_id`, keep bounded trails, and remove stale tracks.
+### Recommended Local Setup
 
-4. Realtime Distribution
-   Send a full snapshot to new clients and delta-only updates to connected clients.
+Homebrew-managed Python often blocks global `pip install`, so a virtual environment is the safest path.
 
-5. Visualization
-   Operate the live tracker through a refined 2D client that stays readable under real traffic.
+```bash
+cd /path/to/adsb-aircraft-tracker
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r backend/requirements.txt
+```
 
-## Implemented Modules
+### Run The Default Tracker
 
-- `backend/app/models`
-  Canonical data structures for raw messages, normalized telemetry, aircraft state, and client update DTOs
+```bash
+cd backend
+python -m app.main
+```
 
-- `backend/app/ingestion`
-  File-based `readsb` ingestion adapter for sample snapshot input
+Then open:
 
-- `backend/app/services`
-  Normalization rules and pipeline debug helpers
+```text
+http://127.0.0.1:8000/
+```
 
-- `backend/app/state`
-  Identity-based in-memory aircraft state store with bounded trail logic
+In the UI:
 
-- `backend/app/streaming`
-  Snapshot/delta event contract and websocket connection hub
+1. leave `Source` on `Sample`
+2. click `Connect`
 
-- `backend/app/api`
-  Thin FastAPI adapter layer for realtime, monitoring, and local client mounting
+That starts the demo flow with mock aircraft and live trails.
 
-- `backend/app/runtime`
-  Live pipeline coordinator and decoder file polling runtime for the validation POC
+## Run Modes
 
-- `frontend/client-2d`
-  Leaflet-based 2D operations client for snapshot/delta verification and live traffic monitoring
+### 1. Built-in Sample Mode
+
+This is the easiest way to validate the full UI locally.
+
+```bash
+cd backend
+python -m app.main
+```
+
+Open `http://127.0.0.1:8000/`, choose `Sample`, then click `Connect`.
+
+### 2. `readsb` Snapshot File Mode
+
+If you already have a decoder snapshot file, point the backend at it:
+
+```bash
+cd backend
+ADSB_SOURCE_MODE=readsb_file \
+ADSB_READSB_SNAPSHOT_PATH=/absolute/path/to/readsb/aircraft.json \
+python -m app.main
+```
+
+Then open `http://127.0.0.1:8000/`, choose `RTL-SDR / readsb`, and click `Connect`.
+
+### 3. `dump1090` Snapshot File Mode
+
+```bash
+cd backend
+ADSB_SOURCE_MODE=dump1090_file \
+ADSB_DUMP1090_SNAPSHOT_PATH=/absolute/path/to/dump1090/aircraft.json \
+python -m app.main
+```
+
+Then open `http://127.0.0.1:8000/`, choose `RTL-SDR / dump1090`, and click `Connect`.
+
+### 4. Standalone Frontend
+
+You can also serve the client without the backend:
+
+```bash
+cd frontend/client-2d
+python3 -m http.server 8080
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080/
+```
+
+Notes:
+
+- `Sample` still works in standalone mode
+- `readsb` and `dump1090` require a backend running on `127.0.0.1:8000`
+
+## Optional Runtime Configuration
+
+- `ADSB_SOURCE_MODE`
+  Initial backend source. Supported values: `sample`, `readsb_file`, `dump1090_file`, `none`
+
+- `ADSB_READSB_SNAPSHOT_PATH`
+  Path to a `readsb` style `aircraft.json`
+
+- `ADSB_DUMP1090_SNAPSHOT_PATH`
+  Path to a `dump1090` style `aircraft.json`
+
+- `ADSB_STALE_AFTER_SECONDS`
+  Stale track eviction timeout. Default: `12`
+
+- `ADSB_POLL_INTERVAL_SECONDS`
+  Decoder file polling interval in seconds. Default: `1.0`
+
+- `ADSB_SAMPLE_INTERVAL_SECONDS`
+  Sample feed tick interval in seconds. Default: `1.2`
+
+- `ADSB_HOST`
+  Backend bind host. Default: `127.0.0.1`
+
+- `ADSB_PORT`
+  Backend bind port. Default: `8000`
+
+- `ADSB_RELOAD`
+  Set to `1` for uvicorn reload mode during development
+
+## Tests
+
+Backend:
+
+```bash
+python3 -m unittest discover -s backend/tests -v
+```
+
+Frontend:
+
+```bash
+node --test frontend/client-2d/tests/*.test.mjs
+node --check frontend/client-2d/app.js
+```
 
 ## Repository Layout
 
@@ -78,6 +180,7 @@ backend/
     api/
     ingestion/
     models/
+    runtime/
     services/
     state/
     streaming/
@@ -85,97 +188,21 @@ backend/
 docs/
 samples/
 scripts/
+frontend/
+  client-2d/
 ```
 
-## Development Notes
+## Extra Debug Tool
 
-The current implementation uses sample `readsb` snapshots stored in `samples/fixtures/` to validate the backend pipeline before wiring in live decoder output.
-
-You can run the existing test suite with:
-
-```bash
-python3 -m unittest discover -s backend/tests -v
-```
-
-You can inspect the Phase 1 pipeline with:
+You can inspect the ingestion and state pipeline directly with:
 
 ```bash
 python3 scripts/debug_state_view.py --snapshot samples/fixtures/readsb/basic_snapshot.json
 ```
 
-Install backend runtime dependencies with:
-
-```bash
-python3 -m pip install -r backend/requirements.txt
-```
-
-You can run the default 2D tracker with the built-in sample feed:
-
-```bash
-cd backend
-python3 -m app.main
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8000/
-```
-
-The root path serves the 2D tracker directly.
-
-You can also run the 2D client standalone with:
-
-```bash
-cd frontend/client-2d
-python3 -m http.server 8080
-```
-
-Then open `http://localhost:8080` and either:
-
-- connect to a live websocket backend
-- or run the built-in sample stream
-
-To poll a real decoder file such as `readsb` or `dump1090` `aircraft.json`, start the backend in file mode:
-
-```bash
-cd backend
-ADSB_SOURCE_MODE=readsb_file \
-ADSB_SOURCE_NAME=dump1090 \
-ADSB_DECODER_TYPE=dump1090 \
-ADSB_READSB_SNAPSHOT_PATH=/absolute/path/to/aircraft.json \
-python3 -m app.main
-```
-
-Optional runtime configuration:
-
-- `ADSB_STALE_AFTER_SECONDS`
-  Override stale track eviction timing. The default is `12`.
-
-- `ADSB_POLL_INTERVAL_SECONDS`
-  Override how often the backend polls the decoder file. The default is `1.0`.
-
-- `ADSB_SAMPLE_INTERVAL_SECONDS`
-  Override the built-in sample feed tick interval. The default is `1.2`.
-
 ## Roadmap
 
-- Continue upgrading the 2D operations screen with filters, follow controls, and live SDR validation tooling
-- Validate the full stack against a real `readsb` or `dump1090` source in the field
-- Add recording, replay, and analytics
-- Harden setup, packaging, and CI for repeatable local installs
-
-## Tech Direction
-
-- Decoder: `readsb`, `dump1090`, or a compatible ADS-B JSON source
-- Backend: Python
-- Realtime transport: WebSocket
-- Frontend target: Leaflet-based 2D operations UI
-
-## Why This Project Exists
-
-This project is intentionally framed as a real-time geospatial data pipeline, not just a map UI. The main engineering value is in the signal-derived data flow:
-
-decoder output -> normalization -> live state -> realtime distribution -> map rendering
-
-That separation keeps the system easier to scale, test, and extend.
+- validate against real SDR field data
+- add better filtering and follow controls
+- add replay and recording workflows
+- improve packaging and deployment ergonomics
