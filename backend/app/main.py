@@ -26,7 +26,6 @@ def create_app() -> Any:
     try:
         from fastapi import FastAPI
         from fastapi.staticfiles import StaticFiles
-        from fastapi.responses import RedirectResponse
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "FastAPI must be installed to create the validation backend app."
@@ -95,14 +94,10 @@ def create_app() -> Any:
     client_2d_path = Path(__file__).resolve().parents[2] / "frontend" / "client-2d"
     if client_2d_path.exists():
         app.mount(
-            "/client-2d",
+            "/",
             StaticFiles(directory=client_2d_path, html=True),
-            name="client-2d",
+            name="client-root",
         )
-
-        @app.get("/", include_in_schema=False)
-        async def root() -> RedirectResponse:
-            return RedirectResponse(url="/client-2d/")
 
     return app
 
