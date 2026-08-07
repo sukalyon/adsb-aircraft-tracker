@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -20,7 +21,7 @@ class _SampleAircraft:
 
 
 class SampleTelemetryScenario:
-    """Produce deterministic moving telemetry for the 2D validation client."""
+    """Produce deterministic moving telemetry for the 2D operations client."""
 
     def __init__(self) -> None:
         self._tick = 0
@@ -63,12 +64,20 @@ class SampleTelemetryScenario:
                 # Stop emitting this aircraft so stale cleanup can validate removals.
                 continue
 
+            previous_latitude = aircraft.latitude
+            previous_longitude = aircraft.longitude
             direction_bias = -1 if aircraft.aircraft_id == "a8b42f" else 1
-            aircraft.latitude += 0.012 * direction_bias
-            aircraft.longitude += 0.024
+            phase = self._tick * 0.42 + index * 0.85
+            aircraft.latitude += 0.009 * direction_bias + math.sin(phase) * 0.0028
+            aircraft.longitude += 0.018 + math.cos(phase * 0.88) * 0.0046
             aircraft.altitude_ft += -160 if aircraft.aircraft_id == "a8b42f" else 110
             aircraft.ground_speed_kt += 0.4 if aircraft.aircraft_id == "a8b42f" else 0.7
-            aircraft.heading_deg = (aircraft.heading_deg + 4 + index) % 360.0
+            aircraft.heading_deg = _calculate_bearing(
+                previous_latitude,
+                previous_longitude,
+                aircraft.latitude,
+                aircraft.longitude,
+            )
 
             telemetry_batch.append(
                 AircraftTelemetry(
@@ -105,3 +114,17 @@ async def run_sample_feed(
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
         raise
+
+
+def _calculate_bearing(
+    from_latitude: float,
+    from_longitude: float,
+    to_latitude: float,
+    to_longitude: float,
+) -> float:
+    delta_longitude = to_longitude - from_longitude
+    delta_latitude = to_latitude - from_latitude
+    if delta_longitude == 0.0 and delta_latitude == 0.0:
+        return 0.0
+
+    return (math.degrees(math.atan2(delta_longitude, delta_latitude)) + 360.0) % 360.0

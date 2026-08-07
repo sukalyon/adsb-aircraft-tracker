@@ -121,14 +121,5 @@ Mapped with:
 
 - The in-memory state can stay rich and backend-oriented.
 - The wire payload stays compact and frontend-oriented.
-- 2D and 3D clients can share the same stream contract.
+- Multiple 2D client surfaces can share the same stream contract.
 - Contract changes can be versioned without reshaping the internal store.
-
-## Phase 2 Task 1 Delivery
-
-Task complete when:
-
-- the event contract is written down
-- snapshot payload generation is implemented
-- delta payload generation is implemented
-- serialization is test-covered

@@ -28,3 +28,7 @@ dist/
 adsb-aircraft-tracker_project_overview.md
 adsb-aircraft-tracker_execution_plan.md
 adsb-aircraft-tracker_project_log.md
+
+# Local-only working docs
+docs/coding-conventions.md
+docs/phase-1-acceptance-checklist.md

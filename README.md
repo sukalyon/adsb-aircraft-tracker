@@ -1,6 +1,6 @@
 # ADS-B Aircraft Tracker
 
-An end-to-end real-time aircraft tracking pipeline built around RTL-SDR, ADS-B decoder output, Python backend processing, and live 2D/3D geospatial visualization.
+An end-to-end real-time aircraft tracking pipeline built around RTL-SDR, ADS-B decoder output, Python backend processing, and a live 2D operations screen.
 
 The goal of this project is not to clone an existing flight tracking product. The goal is to build a clean, extensible system for:
 
@@ -8,20 +8,21 @@ The goal of this project is not to clone an existing flight tracking product. Th
 - normalizing live aircraft telemetry
 - maintaining active aircraft state over time
 - streaming updates to connected clients with low latency
-- validating behavior in 2D first, then expanding into a 3D Cesium-based view
+- validating behavior in a clean 2D surface before taking the system into live SDR field use
 
 ## Current Status
 
-The repository currently contains the backend foundation and the first validation client for the first three phases:
+The repository currently contains the backend foundation, the runnable validation POC, and the first pass of a more operational 2D screen:
 
 - Phase 1: source contract, ingestion adapter, normalization pipeline, in-memory aircraft state store, debug tooling
 - Phase 2: snapshot/delta stream contract, websocket hub, framework adapter boundary, change detection, and stream observability
 - Phase 3: runnable 2D validation POC with a FastAPI bootstrap, live WebSocket mode, built-in sample mode, and a decoder file polling path
+- Phase 4: initial 2D operations-screen redesign with a cleaner information hierarchy, traffic list, selected-flight panel, and improved aircraft symbology
 
 What is not finished yet:
 
-- deeper 2D validation features such as filters and performance controls
-- 3D Cesium client
+- deeper 2D operational features such as follow modes, richer filtering, and SDR-focused health visibility
+- real-world field validation against a live `readsb` or `dump1090` feed
 - analytics, replay, and packaging
 
 ## Architecture
@@ -41,7 +42,7 @@ The project is built around a clear separation of responsibilities:
    Send a full snapshot to new clients and delta-only updates to connected clients.
 
 5. Visualization
-   Validate behavior in a simple 2D client first, then build the operational 3D view.
+   Operate the live tracker through a refined 2D client that stays readable under real traffic.
 
 ## Implemented Modules
 
@@ -67,7 +68,7 @@ The project is built around a clear separation of responsibilities:
   Live pipeline coordinator and decoder file polling runtime for the validation POC
 
 - `frontend/client-2d`
-  Leaflet-based validation client for snapshot/delta stream verification
+  Leaflet-based 2D operations client for snapshot/delta verification and live traffic monitoring
 
 ## Repository Layout
 
@@ -108,7 +109,7 @@ Install backend runtime dependencies with:
 python3 -m pip install -r backend/requirements.txt
 ```
 
-You can run the default 2D validation POC with the built-in sample feed:
+You can run the default 2D tracker with the built-in sample feed:
 
 ```bash
 cd backend
@@ -118,10 +119,10 @@ python3 -m app.main
 Then open:
 
 ```text
-http://127.0.0.1:8000/client-2d/
+http://127.0.0.1:8000/
 ```
 
-The client will auto-fill the local websocket URL and can connect to the live backend immediately.
+The root path serves the 2D tracker directly.
 
 You can also run the 2D client standalone with:
 
@@ -159,17 +160,17 @@ Optional runtime configuration:
 
 ## Roadmap
 
-- Connect the websocket hub to a runnable backend application
-- Expand the 2D validation client with filters and performance checks
-- Build the Cesium 3D client
+- Continue upgrading the 2D operations screen with filters, follow controls, and live SDR validation tooling
+- Validate the full stack against a real `readsb` or `dump1090` source in the field
 - Add recording, replay, and analytics
+- Harden setup, packaging, and CI for repeatable local installs
 
 ## Tech Direction
 
 - Decoder: `readsb`, `dump1090`, or a compatible ADS-B JSON source
 - Backend: Python
 - Realtime transport: WebSocket
-- 3D frontend target: CesiumJS
+- Frontend target: Leaflet-based 2D operations UI
 
 ## Why This Project Exists
 
