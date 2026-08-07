@@ -28,7 +28,6 @@ This project focuses on the full data path, not just the map:
 
 ## What Is Not Finished Yet
 
-- field validation against a real live SDR capture setup
 - richer operational filters and SDR health visibility
 - replay, recording workflows, and packaging
 
