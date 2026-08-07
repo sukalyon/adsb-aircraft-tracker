@@ -171,6 +171,35 @@ class AircraftStateStoreTests(unittest.TestCase):
         self.assertEqual(removed[0].changed_fields, ("status",))
         self.assertEqual(store.active_count, 0)
 
+    def test_clear_removes_all_active_tracks(self) -> None:
+        store = AircraftStateStore(stale_after=timedelta(seconds=30))
+
+        store.apply(
+            AircraftTelemetry(
+                aircraft_id="4ca123",
+                captured_at=parse_timestamp("2026-04-13T09:00:00Z"),
+                source="readsb",
+                latitude=41.0,
+                longitude=29.0,
+            )
+        )
+        store.apply(
+            AircraftTelemetry(
+                aircraft_id="71be10",
+                captured_at=parse_timestamp("2026-04-13T09:00:01Z"),
+                source="readsb",
+                latitude=41.2,
+                longitude=29.2,
+            )
+        )
+
+        removed = store.clear(reason="source_reset")
+
+        self.assertEqual(len(removed), 2)
+        self.assertTrue(all(change.change_type == StateChangeType.REMOVED for change in removed))
+        self.assertTrue(all(change.reason == "source_reset" for change in removed))
+        self.assertEqual(store.active_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -569,7 +569,7 @@ body[data-map-style="satellite"] .map-scrim {
   top: 0;
   z-index: 1;
   width: max-content;
-  padding: 0 10px 10px;
+  padding: 8px 10px 10px;
   border-bottom: 1px solid rgba(111, 129, 148, 0.18);
   background: linear-gradient(180deg, rgba(10, 14, 19, 0.82), rgba(10, 14, 19, 0.68));
   color: var(--muted);
@@ -631,6 +631,7 @@ body[data-map-style="satellite"] .map-scrim {
   border-bottom: 1px solid rgba(111, 129, 148, 0.12);
   font-family: "JetBrains Mono", monospace;
   font-size: 12px;
+  font-weight: 500;
 }
 
 .aircraft-row .callsign {
@@ -737,6 +738,14 @@ body[data-map-style="satellite"] .map-scrim {
 
 .debug-panel h3 {
   margin: 0 0 10px;
+}
+
+.debug-field {
+  margin-bottom: 12px;
+}
+
+.debug-field input {
+  background: rgba(7, 11, 16, 0.78);
 }
 
 .stats-grid {

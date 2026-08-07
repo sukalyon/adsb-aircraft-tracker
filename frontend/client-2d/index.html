@@ -31,13 +31,16 @@
 
         <div class="header-tools">
           <label class="field source-field">
-            <span>WebSocket Source</span>
-            <input id="ws-url" type="text" spellcheck="false" />
+            <span>Source</span>
+            <select id="source-select">
+              <option value="sample">Sample</option>
+              <option value="readsb">RTL-SDR / readsb</option>
+              <option value="dump1090">RTL-SDR / dump1090</option>
+            </select>
           </label>
 
           <div class="action-strip">
-            <button id="connect-live" type="button" class="primary">Connect Live</button>
-            <button id="start-sample" type="button" class="ghost">Run Sample</button>
+            <button id="connect-source" type="button" class="primary">Connect</button>
             <button id="stop-source" type="button" class="danger">Stop</button>
             <button id="fit-aircraft" type="button" class="ghost">Fit Traffic</button>
             <button id="clear-ui" type="button" class="ghost">Clear</button>
@@ -103,7 +106,7 @@
               </div>
               <ul id="aircraft-list" class="aircraft-list"></ul>
               <p id="empty-traffic" class="empty-state">
-                No traffic loaded yet. Connect to a live source or run the sample stream.
+                No traffic loaded yet. Connect to a source to begin.
               </p>
             </div>
           </div>
@@ -119,6 +122,10 @@
           <div class="debug-grid">
             <section class="debug-panel">
               <h3>Realtime Stats</h3>
+              <label class="field debug-field">
+                <span>WebSocket URL</span>
+                <input id="ws-url" type="text" spellcheck="false" />
+              </label>
               <dl class="stats-grid">
                 <div>
                   <dt>Connected</dt>

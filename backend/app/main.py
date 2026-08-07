@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -9,14 +8,12 @@ from typing import Any
 
 from app.api.monitoring import create_monitoring_router
 from app.api.realtime import register_realtime_websocket
-from app.ingestion.readsb import ReadsbFileIngestionAdapter
 from app.runtime import (
-    DecoderFileSourceRuntime,
     RealtimePipeline,
+    SourceController,
+    build_source_definitions_from_env,
     ensure_websocket_runtime_support,
 )
-from app.services.normalization import TelemetryNormalizer
-from app.services.sample_feed import run_sample_feed
 from app.state.store import AircraftStateStore
 from app.streaming.websocket import RealtimeWebSocketHub
 
@@ -33,7 +30,6 @@ def create_app() -> Any:
 
     ensure_websocket_runtime_support()
 
-    source_mode = os.getenv("ADSB_SOURCE_MODE", "sample").strip().lower()
     state_store = AircraftStateStore(
         stale_after=timedelta(seconds=_env_float("ADSB_STALE_AFTER_SECONDS", default=12.0))
     )
@@ -42,27 +38,24 @@ def create_app() -> Any:
         state_store=state_store,
         websocket_hub=websocket_hub,
     )
-    source_runtime = _create_source_runtime(source_mode=source_mode, pipeline=pipeline)
+    source_definitions, initial_source_id = build_source_definitions_from_env()
+    source_controller = SourceController(
+        pipeline=pipeline,
+        state_store=state_store,
+        websocket_hub=websocket_hub,
+        source_definitions=source_definitions,
+        initial_source_id=initial_source_id,
+        poll_interval_seconds=_env_float("ADSB_POLL_INTERVAL_SECONDS", default=1.0),
+        sample_interval_seconds=_env_float("ADSB_SAMPLE_INTERVAL_SECONDS", default=1.2),
+    )
 
     @asynccontextmanager
     async def lifespan(app: Any):
-        app.state.source_task = _create_source_task(
-            source_mode=source_mode,
-            pipeline=pipeline,
-            source_runtime=source_runtime,
-        )
+        await source_controller.start_initial_source()
         try:
             yield
         finally:
-            task = app.state.source_task
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                finally:
-                    app.state.source_task = None
+            await source_controller.shutdown()
 
     app = FastAPI(
         title="ADS-B Aircraft Tracker",
@@ -72,9 +65,7 @@ def create_app() -> Any:
     app.state.state_store = state_store
     app.state.websocket_hub = websocket_hub
     app.state.pipeline = pipeline
-    app.state.source_mode = source_mode
-    app.state.source_runtime = source_runtime
-    app.state.source_task = None
+    app.state.source_controller = source_controller
 
     register_realtime_websocket(
         app,
@@ -86,8 +77,7 @@ def create_app() -> Any:
             state_store=state_store,
             websocket_hub=websocket_hub,
             pipeline=pipeline,
-            source_runtime=source_runtime,
-            source_mode=source_mode,
+            source_controller=source_controller,
         )
     )
 
@@ -110,53 +100,6 @@ def _env_float(name: str, *, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
-
-
-def _create_source_runtime(*, source_mode: str, pipeline: RealtimePipeline) -> DecoderFileSourceRuntime | None:
-    if source_mode != "readsb_file":
-        return None
-
-    snapshot_path = os.getenv("ADSB_READSB_SNAPSHOT_PATH")
-    if not snapshot_path:
-        raise RuntimeError(
-            "ADSB_READSB_SNAPSHOT_PATH must be set when ADSB_SOURCE_MODE=readsb_file."
-        )
-
-    source_name = os.getenv("ADSB_SOURCE_NAME", "readsb")
-    decoder_type = os.getenv("ADSB_DECODER_TYPE", source_name)
-
-    return DecoderFileSourceRuntime(
-        pipeline=pipeline,
-        ingestion_adapter=ReadsbFileIngestionAdapter(
-            snapshot_path=Path(snapshot_path),
-            source_name=source_name,
-            decoder_type=decoder_type,
-        ),
-        normalizer=TelemetryNormalizer(),
-        poll_interval_seconds=_env_float("ADSB_POLL_INTERVAL_SECONDS", default=1.0),
-    )
-
-
-def _create_source_task(
-    *,
-    source_mode: str,
-    pipeline: RealtimePipeline,
-    source_runtime: DecoderFileSourceRuntime | None,
-) -> asyncio.Task[None] | None:
-    if source_mode == "sample":
-        return asyncio.create_task(
-            run_sample_feed(
-                pipeline,
-                interval_seconds=_env_float("ADSB_SAMPLE_INTERVAL_SECONDS", default=1.2),
-            )
-        )
-
-    if source_mode == "readsb_file":
-        if source_runtime is None:
-            raise RuntimeError("readsb_file source mode requires a configured source runtime.")
-        return asyncio.create_task(source_runtime.run())
-
-    raise RuntimeError(f"Unsupported ADS-B source mode: {source_mode}")
 
 
 app = create_app()

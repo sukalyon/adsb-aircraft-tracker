@@ -105,6 +105,24 @@ class AircraftStateStore:
 
         return removed
 
+    def clear(self, *, reason: str = "cleared") -> list[StateChange]:
+        removed: list[StateChange] = []
+
+        for aircraft_id, state in list(self._states.items()):
+            state.status = TrackStatus.REMOVED
+            removed.append(
+                StateChange(
+                    change_type=StateChangeType.REMOVED,
+                    aircraft_id=aircraft_id,
+                    state=state,
+                    reason=reason,
+                    changed_fields=("status",),
+                )
+            )
+            del self._states[aircraft_id]
+
+        return removed
+
     def _merge_into_state(self, state: AircraftState, telemetry: AircraftTelemetry) -> None:
         state.last_seen = telemetry.captured_at
         state.source = telemetry.source

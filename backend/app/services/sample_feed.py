@@ -18,6 +18,16 @@ class _SampleAircraft:
     altitude_ft: int
     ground_speed_kt: float
     heading_deg: float
+    drift_latitude: float
+    drift_longitude: float
+    wave_latitude: float
+    wave_longitude: float
+    wave_phase: float
+    wave_frequency: float
+    wave_longitude_frequency: float
+    altitude_step: int
+    speed_step: float
+    remove_after_tick: int | None = None
 
 
 class SampleTelemetryScenario:
@@ -34,6 +44,15 @@ class SampleTelemetryScenario:
                 altitude_ft=32000,
                 ground_speed_kt=438.5,
                 heading_deg=92.0,
+                drift_latitude=0.009,
+                drift_longitude=0.018,
+                wave_latitude=0.0028,
+                wave_longitude=0.0046,
+                wave_phase=0.0,
+                wave_frequency=0.42,
+                wave_longitude_frequency=0.88,
+                altitude_step=110,
+                speed_step=0.7,
             ),
             _SampleAircraft(
                 aircraft_id="a8b42f",
@@ -43,6 +62,16 @@ class SampleTelemetryScenario:
                 altitude_ft=11825,
                 ground_speed_kt=214.8,
                 heading_deg=242.0,
+                drift_latitude=-0.009,
+                drift_longitude=0.018,
+                wave_latitude=0.0028,
+                wave_longitude=0.0046,
+                wave_phase=0.85,
+                wave_frequency=0.42,
+                wave_longitude_frequency=0.88,
+                altitude_step=-160,
+                speed_step=0.4,
+                remove_after_tick=48,
             ),
             _SampleAircraft(
                 aircraft_id="71be10",
@@ -52,6 +81,51 @@ class SampleTelemetryScenario:
                 altitude_ft=36500,
                 ground_speed_kt=456.1,
                 heading_deg=118.0,
+                drift_latitude=0.009,
+                drift_longitude=0.018,
+                wave_latitude=0.0028,
+                wave_longitude=0.0046,
+                wave_phase=1.7,
+                wave_frequency=0.42,
+                wave_longitude_frequency=0.88,
+                altitude_step=110,
+                speed_step=0.7,
+            ),
+            _SampleAircraft(
+                aircraft_id="45aa71",
+                callsign="SOF2IZ",
+                latitude=42.6977,
+                longitude=23.3219,
+                altitude_ft=28600,
+                ground_speed_kt=404.2,
+                heading_deg=146.0,
+                drift_latitude=-0.0135,
+                drift_longitude=0.0152,
+                wave_latitude=0.0032,
+                wave_longitude=0.0038,
+                wave_phase=2.4,
+                wave_frequency=0.36,
+                wave_longitude_frequency=0.82,
+                altitude_step=90,
+                speed_step=0.5,
+            ),
+            _SampleAircraft(
+                aircraft_id="3c91ef",
+                callsign="ESK4EU",
+                latitude=39.7767,
+                longitude=30.5206,
+                altitude_ft=34750,
+                ground_speed_kt=428.6,
+                heading_deg=307.0,
+                drift_latitude=0.0084,
+                drift_longitude=-0.0186,
+                wave_latitude=0.0024,
+                wave_longitude=0.0044,
+                wave_phase=3.15,
+                wave_frequency=0.33,
+                wave_longitude_frequency=0.94,
+                altitude_step=70,
+                speed_step=0.6,
             ),
         ]
 
@@ -59,19 +133,21 @@ class SampleTelemetryScenario:
         self._tick += 1
         telemetry_batch: list[AircraftTelemetry] = []
 
-        for index, aircraft in enumerate(list(self._aircraft)):
-            if aircraft.aircraft_id == "a8b42f" and self._tick >= 9:
+        for aircraft in list(self._aircraft):
+            if aircraft.remove_after_tick is not None and self._tick >= aircraft.remove_after_tick:
                 # Stop emitting this aircraft so stale cleanup can validate removals.
                 continue
 
             previous_latitude = aircraft.latitude
             previous_longitude = aircraft.longitude
-            direction_bias = -1 if aircraft.aircraft_id == "a8b42f" else 1
-            phase = self._tick * 0.42 + index * 0.85
-            aircraft.latitude += 0.009 * direction_bias + math.sin(phase) * 0.0028
-            aircraft.longitude += 0.018 + math.cos(phase * 0.88) * 0.0046
-            aircraft.altitude_ft += -160 if aircraft.aircraft_id == "a8b42f" else 110
-            aircraft.ground_speed_kt += 0.4 if aircraft.aircraft_id == "a8b42f" else 0.7
+            phase = self._tick * aircraft.wave_frequency + aircraft.wave_phase
+            aircraft.latitude += aircraft.drift_latitude + math.sin(phase) * aircraft.wave_latitude
+            aircraft.longitude += (
+                aircraft.drift_longitude
+                + math.cos(phase * aircraft.wave_longitude_frequency) * aircraft.wave_longitude
+            )
+            aircraft.altitude_ft += aircraft.altitude_step
+            aircraft.ground_speed_kt += aircraft.speed_step
             aircraft.heading_deg = _calculate_bearing(
                 previous_latitude,
                 previous_longitude,

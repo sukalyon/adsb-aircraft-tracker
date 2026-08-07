@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.runtime import RealtimePipeline
+from app.runtime.source_control import SourceController, SourceSelectionError
 from app.state.store import AircraftStateStore
 from app.streaming.websocket import RealtimeWebSocketHub
 
@@ -13,12 +14,11 @@ def create_monitoring_router(
     state_store: AircraftStateStore,
     websocket_hub: RealtimeWebSocketHub,
     pipeline: RealtimePipeline,
-    source_runtime: Any | None = None,
-    source_mode: str = "sample",
+    source_controller: SourceController,
 ) -> Any:
     """Create lightweight HTTP endpoints for validation and observability."""
     try:
-        from fastapi import APIRouter
+        from fastapi import APIRouter, HTTPException
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "FastAPI must be installed to create the monitoring router."
@@ -62,10 +62,7 @@ def create_monitoring_router(
                 "last_snapshot_sent_at": _serialize_timestamp(hub_metrics.last_snapshot_sent_at),
                 "last_delta_sent_at": _serialize_timestamp(hub_metrics.last_delta_sent_at),
             },
-            "source": _build_source_payload(
-                source_mode=source_mode,
-                source_runtime=source_runtime,
-            ),
+            "source": source_controller.monitoring_payload(),
         }
 
     @router.get("/api/aircraft")
@@ -88,31 +85,29 @@ def create_monitoring_router(
             ],
         }
 
+    @router.get("/api/source")
+    async def source_status() -> dict[str, Any]:
+        return source_controller.monitoring_payload()
+
+    @router.post("/api/source/select")
+    async def select_source(payload: dict[str, Any]) -> dict[str, Any]:
+        source_id = str(payload.get("source") or "").strip().lower()
+        if not source_id:
+            raise HTTPException(status_code=400, detail="source is required")
+
+        try:
+            snapshot = await source_controller.select_source(source_id)
+        except SourceSelectionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        return snapshot.to_dict()
+
+    @router.post("/api/source/stop")
+    async def stop_source() -> dict[str, Any]:
+        snapshot = await source_controller.stop_source()
+        return snapshot.to_dict()
+
     return router
-
-
-def _build_source_payload(*, source_mode: str, source_runtime: Any | None) -> dict[str, Any]:
-    if source_runtime is None:
-        return {
-            "mode": source_mode,
-            "is_running": source_mode == "sample",
-        }
-
-    metrics = source_runtime.metrics_snapshot()
-    return {
-        "mode": metrics.source_mode,
-        "is_running": metrics.is_running,
-        "poll_interval_seconds": metrics.poll_interval_seconds,
-        "total_batches_ingested": metrics.total_batches_ingested,
-        "total_batches_skipped": metrics.total_batches_skipped,
-        "total_raw_records": metrics.total_raw_records,
-        "total_dropped_records": metrics.total_dropped_records,
-        "total_normalized_telemetry": metrics.total_normalized_telemetry,
-        "total_ingestion_warnings": metrics.total_ingestion_warnings,
-        "total_normalization_issues": metrics.total_normalization_issues,
-        "last_batch_captured_at": _serialize_timestamp(metrics.last_batch_captured_at),
-        "last_error": metrics.last_error,
-    }
 
 
 def _serialize_timestamp(value: datetime | None) -> str | None:
