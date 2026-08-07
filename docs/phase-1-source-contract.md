@@ -100,28 +100,6 @@ Sorumluluk:
 
 - `AircraftUpdateDTO`
 
-## İlk Repo İskeleti
-
-```text
-adsb-aircraft-tracker/
-  adsb-aircraft-tracker_project_overview.md
-  adsb-aircraft-tracker_execution_plan.md
-  adsb-aircraft-tracker_project_log.md
-  docs/
-  backend/
-    app/
-      ingestion/
-      models/
-      state/
-      services/
-    tests/
-  frontend/
-    client-2d/
-    client-3d-cesium/
-  samples/
-  scripts/
-```
-
 ## İlk Teknik Kararlar
 
 ### Karar 1
@@ -141,33 +119,12 @@ Canlı veri hattında domain state ile render state kesin olarak ayrılacak.
 Gerekçe:
 
 - backend state ile frontend obje yaşam döngüsü birbirine karışmayacak
-- 2D ve 3D istemciler aynı canlı veri kontratını kullanabilecek
+- farkli 2D istemci yuzeyleri ayni canli veri kontratini kullanabilecek
 
 ### Karar 3
 
-İlk görsel hedef 3D değil, veri hattısını doğrulayan 2D istemci olacak.
+Ilk gorsel hedef, veri hattisini dogrulayan ve daha sonra operasyonel hale gelecek 2D istemci olacak.
 
 Gerekçe:
 
 - telemetry ve state hatalarını render karmaşıklığından ayırmak
-
-## Task 1 Teslim Kriteri
-
-Bu task tamamlanmış sayılırsa:
-
-- plan kök dizinde kayıtlıdır
-- source contract yazılıdır
-- proje günlüğü başlatılmıştır
-- klasör iskeleti oluşturulmuştur
-
-## Task 1 Sonu Kontrol Sorusu
-
-`Bu task’ı şimdi uygulamak için gerekli dosya/klasör/karar elimizde var mı?`
-
-Cevap: Evet.
-
-Eksik kalanlar ama task’ı bloklamayanlar:
-
-- gerçek decoder örnek JSON dosyası
-- fixture için alan varyasyonları
-- stale timeout ve trail limit varsayılan değerleri
