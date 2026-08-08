@@ -6,8 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.request import urlopen
 
-from app.ingestion.readsb import ReadsbFileIngestionAdapter
+from app.ingestion.readsb import ReadsbFileIngestionAdapter, ReadsbUrlIngestionAdapter
 from app.services.normalization import TelemetryNormalizer
 from app.services.sample_feed import run_sample_feed
 from app.state.store import AircraftStateStore
@@ -25,6 +26,7 @@ class SourceDefinition:
     source_name: str
     decoder_type: str | None = None
     snapshot_path: Path | None = None
+    snapshot_url: str | None = None
 
     @property
     def kind(self) -> str:
@@ -34,13 +36,18 @@ class SourceDefinition:
         if self.kind == "sample":
             return True, None
 
-        if self.snapshot_path is None:
-            return False, "Not configured"
+        if self.snapshot_path is not None and self.snapshot_path.exists():
+            return True, None
 
-        if not self.snapshot_path.exists():
+        if self.snapshot_url is not None:
+            if not _snapshot_url_is_available(self.snapshot_url):
+                return False, "Snapshot endpoint unavailable"
+            return True, None
+
+        if self.snapshot_path is not None:
             return False, "Snapshot file not found"
 
-        return True, None
+        return False, "Not configured"
 
 
 @dataclass(slots=True, frozen=True)
@@ -217,11 +224,7 @@ class SourceController:
 
         runtime = DecoderFileSourceRuntime(
             pipeline=self.pipeline,
-            ingestion_adapter=ReadsbFileIngestionAdapter(
-                snapshot_path=definition.snapshot_path or Path(),
-                source_name=definition.source_name,
-                decoder_type=definition.decoder_type or definition.source_name,
-            ),
+            ingestion_adapter=_build_ingestion_adapter(definition),
             normalizer=TelemetryNormalizer(),
             poll_interval_seconds=self._poll_interval_seconds,
         )
@@ -252,12 +255,18 @@ def build_source_definitions_from_env(
     environment: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, SourceDefinition], str]:
     env = dict(os.environ if environment is None else environment)
+    use_local_autodiscovery = environment is None
     source_mode = env.get("ADSB_SOURCE_MODE", "sample").strip().lower()
     legacy_snapshot_path = _read_path_env(env, "ADSB_READSB_SNAPSHOT_PATH")
     readsb_snapshot_path = _read_path_env(env, "ADSB_READSB_SNAPSHOT_PATH")
     dump1090_snapshot_path = _read_path_env(env, "ADSB_DUMP1090_SNAPSHOT_PATH")
+    readsb_snapshot_url = _read_text_env(env, "ADSB_READSB_SNAPSHOT_URL")
+    dump1090_snapshot_url = _read_text_env(env, "ADSB_DUMP1090_SNAPSHOT_URL")
     legacy_source_name = env.get("ADSB_SOURCE_NAME", "readsb").strip().lower()
     legacy_decoder_type = env.get("ADSB_DECODER_TYPE", legacy_source_name).strip().lower()
+
+    if use_local_autodiscovery and dump1090_snapshot_path is None and dump1090_snapshot_url is None:
+        dump1090_snapshot_url = "http://127.0.0.1:8080/data/aircraft.json"
 
     if source_mode == "readsb_file" and legacy_snapshot_path is not None:
         if "dump1090" in {legacy_source_name, legacy_decoder_type}:
@@ -282,6 +291,7 @@ def build_source_definitions_from_env(
             source_name="readsb",
             decoder_type="readsb",
             snapshot_path=readsb_snapshot_path,
+            snapshot_url=readsb_snapshot_url,
         ),
         "dump1090": SourceDefinition(
             source_id="dump1090",
@@ -290,6 +300,7 @@ def build_source_definitions_from_env(
             source_name="dump1090",
             decoder_type="dump1090",
             snapshot_path=dump1090_snapshot_path,
+            snapshot_url=dump1090_snapshot_url,
         ),
     }
 
@@ -317,6 +328,42 @@ def _read_path_env(environment: Mapping[str, str], key: str) -> Path | None:
         return None
 
     return Path(raw_value).expanduser()
+
+
+def _read_text_env(environment: Mapping[str, str], key: str) -> str | None:
+    raw_value = environment.get(key)
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    return value or None
+
+
+def _snapshot_url_is_available(snapshot_url: str) -> bool:
+    try:
+        with urlopen(snapshot_url, timeout=0.5) as response:
+            response.read(1)
+        return True
+    except Exception:
+        return False
+
+
+def _build_ingestion_adapter(definition: SourceDefinition) -> ReadsbFileIngestionAdapter | ReadsbUrlIngestionAdapter:
+    if definition.snapshot_path is not None:
+        return ReadsbFileIngestionAdapter(
+            snapshot_path=definition.snapshot_path,
+            source_name=definition.source_name,
+            decoder_type=definition.decoder_type or definition.source_name,
+        )
+
+    if definition.snapshot_url is not None:
+        return ReadsbUrlIngestionAdapter(
+            snapshot_url=definition.snapshot_url,
+            source_name=definition.source_name,
+            decoder_type=definition.decoder_type or definition.source_name,
+        )
+
+    raise SourceSelectionError(f"No snapshot source configured for {definition.source_id}")
 
 
 def _serialize_timestamp(value: datetime | None) -> str | None:

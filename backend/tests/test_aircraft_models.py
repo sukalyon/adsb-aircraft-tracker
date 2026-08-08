@@ -8,7 +8,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.ingestion.readsb import IngestionError, ReadsbFileIngestionAdapter
+from app.ingestion.readsb import (
+    IngestionError,
+    ReadsbFileIngestionAdapter,
+    ReadsbUrlIngestionAdapter,
+)
 from app.models.aircraft import AircraftTelemetry, RawAircraftMessage, parse_timestamp
 from app.services.normalization import TelemetryNormalizer
 
@@ -127,6 +131,19 @@ class AircraftModelFixtureTests(unittest.TestCase):
         self.assertEqual(batch.raw_record_count, 2)
         self.assertEqual(batch.messages[0].decoder_type, "dump1090")
         self.assertEqual(batch.messages[1].raw_ground_speed_kt, 214.8)
+
+    def test_readsb_url_adapter_ingests_decoder_snapshot_from_file_uri(self) -> None:
+        adapter = ReadsbUrlIngestionAdapter(
+            (ROOT / "samples/fixtures/readsb/decoder_aircraft_snapshot.json").as_uri(),
+            source_name="dump1090",
+            decoder_type="dump1090",
+        )
+
+        batch = adapter.ingest()
+
+        self.assertEqual(batch.source, "dump1090")
+        self.assertEqual(batch.raw_record_count, 2)
+        self.assertEqual(batch.messages[0].decoder_type, "dump1090")
 
     def test_readsb_file_adapter_rejects_invalid_snapshot_shape(self) -> None:
         invalid_path = ROOT / "samples/fixtures/readsb/invalid_snapshot.json"

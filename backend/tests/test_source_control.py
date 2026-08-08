@@ -34,6 +34,19 @@ class SourceControlConfigTests(unittest.TestCase):
         self.assertEqual(initial_source_id, "dump1090")
         self.assertTrue(definitions["dump1090"].availability()[0])
 
+    def test_explicit_dump1090_url_configuration_enables_live_source(self) -> None:
+        definitions, initial_source_id = build_source_definitions_from_env(
+            {
+                "ADSB_SOURCE_MODE": "dump1090_file",
+                "ADSB_DUMP1090_SNAPSHOT_URL": str(
+                    (ROOT / "samples" / "fixtures" / "readsb" / "decoder_aircraft_snapshot.json").as_uri()
+                ),
+            }
+        )
+
+        self.assertEqual(initial_source_id, "dump1090")
+        self.assertTrue(definitions["dump1090"].availability()[0])
+
 
 if __name__ == "__main__":
     unittest.main()
